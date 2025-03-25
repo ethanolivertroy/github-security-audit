@@ -84,6 +84,23 @@ Run the script with your organization name and optionally a GitHub token:
 
 The script will create an output directory with all collected data and a comprehensive compliance report.
 
+### Finding Your GitHub Organization Name
+
+Your GitHub organization name is the name that appears in your organization's URL. Here's how to find it:
+
+1. **From the URL**: 
+   - Go to your organization in GitHub
+   - Look at the URL, which will be in the format: `https://github.com/YOUR-ORG-NAME`
+   - The text after `github.com/` is your organization name
+
+2. **From GitHub UI**:
+   - Log in to GitHub
+   - Click your profile photo in the top-right corner
+   - Click "Your organizations" from the dropdown
+   - Find your organization in the list - the name displayed is your organization name
+
+For example, if your organization URL is `https://github.com/acme-corporation`, then your organization name is `acme-corporation`.
+
 ### GitHub Token
 
 When using a token, ensure it has the following permissions:
@@ -97,6 +114,28 @@ This is particularly useful for:
 - Running on systems without GitHub CLI installed
 - When you need higher API rate limits
 - Running on headless environments
+
+#### Creating a GitHub Token
+
+To generate a GitHub token:
+
+1. Log in to GitHub
+2. Click your profile photo in the top-right corner
+3. Click "Settings"
+4. Scroll down to "Developer settings" in the left sidebar
+5. Click "Personal access tokens" → "Tokens (classic)"
+6. Click "Generate new token" → "Generate new token (classic)"
+7. Give your token a descriptive name (e.g., "FedRAMP Audit Script")
+8. Set an expiration date
+9. Select the following scopes:
+   - `repo` (all repo permissions)
+   - `read:org`
+   - `admin:org_hook`
+   - `security_events`
+10. Click "Generate token"
+11. Copy the token immediately (you won't be able to see it again)
+
+Use this token when running the script: `./github_fedramp_audit.sh your-organization-name your-token`
 
 ## Output
 
