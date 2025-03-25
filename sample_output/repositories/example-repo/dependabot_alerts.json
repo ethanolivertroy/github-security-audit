@@ -1,0 +1,144 @@
+[
+  {
+    "number": 1,
+    "state": "fixed",
+    "dependency": {
+      "package": {
+        "ecosystem": "npm",
+        "name": "lodash"
+      },
+      "manifest_path": "package.json",
+      "scope": "runtime"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-35jh-r3h4-6jm5",
+      "cve_id": "CVE-2021-23337",
+      "summary": "Prototype Pollution in lodash",
+      "description": "Versions of lodash prior to 4.17.21 are vulnerable to prototype pollution. The vulnerability is due to the assumption that the property path is constructed from user input and that the unsafe assignment is using the path to access the object, instead of the path itself.",
+      "severity": "high",
+      "identifiers": [
+        {
+          "type": "GHSA",
+          "value": "GHSA-35jh-r3h4-6jm5"
+        },
+        {
+          "type": "CVE",
+          "value": "CVE-2021-23337"
+        }
+      ],
+      "references": [
+        "https://nvd.nist.gov/vuln/detail/CVE-2021-23337",
+        "https://github.com/lodash/lodash/pull/5065",
+        "https://github.com/lodash/lodash/commit/4b460ab"
+      ],
+      "published_at": "2021-02-15T21:28:41Z",
+      "updated_at": "2023-01-19T01:43:30Z",
+      "withdrawn_at": null,
+      "vulnerabilities": [
+        {
+          "package": {
+            "ecosystem": "npm",
+            "name": "lodash"
+          },
+          "vulnerable_version_range": "< 4.17.21",
+          "patched_versions": ">=4.17.21"
+        }
+      ],
+      "cvss": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L",
+        "score": 7.3
+      }
+    },
+    "security_vulnerability": {
+      "package": {
+        "ecosystem": "npm",
+        "name": "lodash"
+      },
+      "vulnerable_version_range": "< 4.17.21",
+      "patched_versions": ">=4.17.21",
+      "vulnerable_functions": [
+        "set"
+      ]
+    },
+    "url": "https://api.github.com/repos/acme-corporation/api-service/dependabot/alerts/1",
+    "html_url": "https://github.com/acme-corporation/api-service/security/dependabot/1",
+    "created_at": "2024-01-10T15:23:14Z",
+    "updated_at": "2024-01-15T09:45:32Z",
+    "dismissed_at": null,
+    "dismissed_by": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "fixed_at": "2024-01-15T09:45:32Z",
+    "auto_dismissed_at": null
+  },
+  {
+    "number": 2,
+    "state": "open",
+    "dependency": {
+      "package": {
+        "ecosystem": "npm",
+        "name": "axios"
+      },
+      "manifest_path": "package.json",
+      "scope": "runtime"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-example-1234",
+      "cve_id": "CVE-2023-1234",
+      "summary": "Axios SSRF vulnerability",
+      "description": "Example vulnerability description for this sample file.",
+      "severity": "medium",
+      "identifiers": [
+        {
+          "type": "GHSA",
+          "value": "GHSA-example-1234"
+        },
+        {
+          "type": "CVE",
+          "value": "CVE-2023-1234"
+        }
+      ],
+      "references": [
+        "https://github.com/axios/axios/security/advisories/example"
+      ],
+      "published_at": "2023-05-15T14:28:41Z",
+      "updated_at": "2023-05-16T01:43:30Z",
+      "withdrawn_at": null,
+      "vulnerabilities": [
+        {
+          "package": {
+            "ecosystem": "npm",
+            "name": "axios"
+          },
+          "vulnerable_version_range": "< 1.3.0",
+          "patched_versions": ">=1.3.0"
+        }
+      ],
+      "cvss": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N",
+        "score": 6.5
+      }
+    },
+    "security_vulnerability": {
+      "package": {
+        "ecosystem": "npm",
+        "name": "axios"
+      },
+      "vulnerable_version_range": "< 1.3.0",
+      "patched_versions": ">=1.3.0",
+      "vulnerable_functions": [
+        "createInstance"
+      ]
+    },
+    "url": "https://api.github.com/repos/acme-corporation/api-service/dependabot/alerts/2",
+    "html_url": "https://github.com/acme-corporation/api-service/security/dependabot/2",
+    "created_at": "2025-02-20T11:13:42Z",
+    "updated_at": "2025-02-20T11:13:42Z",
+    "dismissed_at": null,
+    "dismissed_by": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "fixed_at": null,
+    "auto_dismissed_at": null
+  }
+]

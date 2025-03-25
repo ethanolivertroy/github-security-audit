@@ -1,0 +1,29 @@
+[
+  {
+    "name": "api-service",
+    "visibility": "private",
+    "isPrivate": true,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "name": "web-frontend",
+    "visibility": "private",
+    "isPrivate": true,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "name": "docs",
+    "visibility": "public",
+    "isPrivate": false,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  }
+]

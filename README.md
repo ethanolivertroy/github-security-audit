@@ -164,6 +164,19 @@ The tool generates the following outputs:
   - FedRAMP-specific requirements assessment
   - Detailed recommendations
 
+### Sample Output
+
+This repository includes a [`sample_output`](./sample_output) directory showing what the audit results look like. Key sample files include:
+
+- [Organization information](./sample_output/organization_info.json)
+- [Branch protection rules](./sample_output/repositories/example-repo/branches/main_protection.json)
+- [Dependabot alerts](./sample_output/repositories/example-repo/dependabot_alerts.json)
+- [Code scanning alerts](./sample_output/repositories/example-repo/code_scanning_alerts.json)
+- [Secret scanning alerts](./sample_output/repositories/example-repo/secret_scanning_alerts.json)
+- [FedRAMP/NIST compliance report](./sample_output/fedramp_nist_compliance_report.md)
+
+Browse the sample output to understand what data is collected and how the compliance mapping works.
+
 ## NIST 800-53 Control Families
 
 The tool evaluates controls across these NIST 800-53 families:

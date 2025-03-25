@@ -1,0 +1,18 @@
+{
+  "name": "CODEOWNERS",
+  "path": ".github/CODEOWNERS",
+  "sha": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b",
+  "size": 538,
+  "url": "https://api.github.com/repos/acme-corporation/api-service/contents/.github/CODEOWNERS",
+  "html_url": "https://github.com/acme-corporation/api-service/blob/main/.github/CODEOWNERS",
+  "git_url": "https://api.github.com/repos/acme-corporation/api-service/git/blobs/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b",
+  "download_url": "https://raw.githubusercontent.com/acme-corporation/api-service/main/.github/CODEOWNERS",
+  "type": "file",
+  "content": "IyBUaGlzIGlzIGEgQ09ERU9XTkVSUyBmaWxlIGZvciB0aGUgQVBJIFNlcnZpY2UK\nCiMgRGVmYXVsdCBvd25lcnMgZm9yIGV2ZXJ5dGhpbmcgaW4gdGhlIHJlcG8KKiAg\nICAgICBAYWNtZS1jb3Jwb3JhdGlvbi9hcGktdGVhbQoKIyBPd25lcnMgZm9yIHNw\nZWNpZmljIGRpcmVjdG9yaWVzCi9zcmMvY29udHJvbGxlcnMvICAgIEBhY21lLWNv\ncnBvcmF0aW9uL2FwaS10ZWFtCi9zcmMvbW9kZWxzLyAgICAgICAgQGFjbWUtY29y\ncG9yYXRpb24vZGF0YS10ZWFtCi9zcmMvY29uZmlnLyAgICAgICAgQGFjbWUtY29y\ncG9yYXRpb24vc2VjdXJpdHktdGVhbQoKIyBTZWN1cml0eS1yZWxhdGVkIGZpbGVz\nCi9zZWN1cml0eS8gICAgICAgICAgQGFjbWUtY29ycG9yYXRpb24vc2VjdXJpdHkt\ndGVhbQovLmdpdGh1Yi93b3JrZmxvd3MvKi55bWwgQGFjbWUtY29ycG9yYXRpb24v\nZGV2b3BzLXRlYW0gQGFjbWUtY29ycG9yYXRpb24vc2VjdXJpdHktdGVhbQo=\n",
+  "encoding": "base64",
+  "_links": {
+    "self": "https://api.github.com/repos/acme-corporation/api-service/contents/.github/CODEOWNERS",
+    "git": "https://api.github.com/repos/acme-corporation/api-service/git/blobs/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b",
+    "html": "https://github.com/acme-corporation/api-service/blob/main/.github/CODEOWNERS"
+  }
+}

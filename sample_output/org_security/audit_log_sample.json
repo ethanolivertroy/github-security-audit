@@ -1,0 +1,40 @@
+[
+  {
+    "action": "org.update_member",
+    "actor": "janedoe",
+    "actor_id": 2345671,
+    "actor_location": {
+      "country_code": "US"
+    },
+    "created_at": "2025-03-24T14:22:17Z",
+    "org": "acme-corporation",
+    "org_id": 12345678,
+    "user": "johndoe",
+    "user_id": 3456782
+  },
+  {
+    "action": "org.add_security_manager",
+    "actor": "janedoe",
+    "actor_id": 2345671,
+    "actor_location": {
+      "country_code": "US"
+    },
+    "created_at": "2025-03-23T09:15:32Z",
+    "org": "acme-corporation",
+    "org_id": 12345678,
+    "user": "secadmin",
+    "user_id": 4567893
+  },
+  {
+    "action": "org.update_default_repository_permission",
+    "actor": "janedoe",
+    "actor_id": 2345671,
+    "actor_location": {
+      "country_code": "US"
+    },
+    "created_at": "2025-03-22T11:05:43Z",
+    "org": "acme-corporation",
+    "org_id": 12345678,
+    "permission": "read"
+  }
+]
