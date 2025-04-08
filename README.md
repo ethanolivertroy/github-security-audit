@@ -1,10 +1,10 @@
-# GitHub FedRAMP/NIST Compliance Audit Tool
+# GitHub FedRAMP/NIST 800-53/800-161 Compliance Audit Tool
 
-A comprehensive Bash script for auditing GitHub organizations against FedRAMP and NIST 800-53 security requirements.
+A comprehensive Bash script for auditing GitHub organizations against FedRAMP, NIST 800-53, and NIST 800-161 Rev. 1 Update 1 security requirements.
 
 ## Overview
 
-This tool performs a comprehensive security audit of GitHub organizations to assess compliance with FedRAMP and NIST 800-53 security requirements. It collects data on organization-level and repository-level security settings and generates a detailed report that maps findings to specific compliance controls.
+This tool performs a comprehensive security audit of GitHub organizations to assess compliance with FedRAMP, NIST 800-53, and NIST 800-161 Rev. 1 Update 1 security requirements. It collects data on organization-level and repository-level security settings and generates a detailed report that maps findings to specific compliance controls, with special attention to software supply chain security requirements.
 
 ## Features
 
@@ -24,8 +24,16 @@ This tool performs a comprehensive security audit of GitHub organizations to ass
   - Security policy verification
   - CI/CD security checks
 
+- **Supply Chain Security Assessment**
+  - Software Bill of Materials (SBOM) generation
+  - Artifact signing and verification
+  - Build provenance and attestation
+  - Dependency review enforcement
+  - Supply chain vulnerability management
+
 - **Compliance Mapping**
   - Maps findings to NIST SP 800-53 control families
+  - Maps findings to NIST SP 800-161 Rev. 1 Update 1 supply chain controls
   - Specifically addresses FedRAMP requirements
   - Provides compliance metrics and statistics
 
@@ -83,6 +91,20 @@ Run the script with your organization name and optionally a GitHub token:
 ```
 
 The script will create an output directory with all collected data and a comprehensive compliance report.
+
+## Manual Evaluation Guide
+
+In addition to the automated audit script, this repository includes a detailed [GitHub FedRAMP and NIST Compliance Evaluation Guide](./github_evaluation_guide.md) for manually assessing GitHub implementations. The guide:
+
+- Provides step-by-step instructions for hands-on evaluation
+- Includes both GitHub UI navigation and API commands for verification
+- Features detailed checklists for each security control
+- Covers all aspects of the NIST 800-53 and 800-161 requirements
+- Includes specific guidance for supply chain security (NIST 800-161r1-upd1)
+- Maps controls to Executive Order 14028 requirements
+- Addresses Zero Trust Architecture principles
+
+Use the evaluation guide alongside the automated script for a comprehensive compliance assessment.
 
 ### Finding Your GitHub Organization Name
 
@@ -177,7 +199,9 @@ This repository includes a [`sample_output`](./sample_output) directory showing 
 
 Browse the sample output to understand what data is collected and how the compliance mapping works.
 
-## NIST 800-53 Control Families
+## NIST Control Families
+
+### NIST 800-53 Control Families
 
 The tool evaluates controls across these NIST 800-53 families:
 
@@ -190,9 +214,23 @@ The tool evaluates controls across these NIST 800-53 families:
 - **SC**: System and Communications Protection
 - **SA**: System and Services Acquisition
 
+### NIST 800-161 Supply Chain Risk Management Controls
+
+The tool also evaluates the following supply chain risk management controls from NIST 800-161 Rev. 1 Update 1:
+
+- **SR-2**: Supply Chain Risk Management Plan
+- **SR-3**: Supply Chain Controls and Processes
+- **SR-4**: Provenance
+- **SR-5**: Acquisition Strategies
+- **SR-8**: Notification Agreements
+- **SR-9**: Tamper Protection
+- **SR-10**: Inspection of Systems or Components
+- **SR-11**: Component Authenticity
+- **SR-13**: Supply Chain Incident Management
+
 ## FedRAMP Alignment
 
-This tool is specifically designed to help organizations prepare for FedRAMP authorization by assessing GitHub security controls against FedRAMP requirements, which are based on NIST 800-53 controls.
+This tool is specifically designed to help organizations prepare for FedRAMP authorization by assessing GitHub security controls against FedRAMP requirements, which are based on NIST 800-53 controls. It also addresses Executive Order 14028 on Improving the Nation's Cybersecurity requirements through the NIST 800-161 supply chain controls.
 
 ## API Rate Limits
 
@@ -213,11 +251,21 @@ The script includes measures to monitor GitHub API rate limits, but if you have 
 
 For detailed information on the GitHub security features that this tool evaluates, refer to:
 
+### GitHub Security Features
 - [Organization security settings](https://docs.github.com/en/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization)
 - [Branch protection rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 - [Security manager role](https://docs.github.com/en/organizations/managing-peoples-access-to-your-organization-with-roles/managing-security-managers-in-your-organization)
 - [GitHub Advanced Security](https://docs.github.com/en/get-started/learning-about-github/about-github-advanced-security)
 - [Audit log documentation](https://docs.github.com/en/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization/reviewing-the-audit-log-for-your-organization)
+
+### Supply Chain Security Resources
+- [Dependency review](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/about-dependency-review)
+- [Dependency graph](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/about-the-dependency-graph)
+- [SBOM generation](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/exporting-a-software-bill-of-materials-for-your-repository)
+- [SLSA Framework](https://slsa.dev/)
+- [Sigstore](https://www.sigstore.dev/)
+- [NIST SP 800-161 Rev. 1 Update 1](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-161r1-upd1.pdf)
+- [Executive Order 14028](https://www.whitehouse.gov/briefing-room/presidential-actions/2021/05/12/executive-order-on-improving-the-nations-cybersecurity/)
 
 ## Disclaimer
 
