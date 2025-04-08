@@ -309,6 +309,59 @@ while IFS=, read -r repo_name default_branch; do
   check_rate_limit
   gh_api "repos/$ORG_NAME/$repo_name" ".security_and_analysis.dependency_review_enforcement_level" "$repo_dir/dependency_review.json" || echo "  Dependency review settings access denied"
   
+  # 4.7 Check for SBOM generation (NIST 800-161r1-upd1 SR-4, SR-8)
+  echo "  Checking for SBOM workflow configuration..."
+  mkdir -p "$repo_dir/sbom"
+  check_rate_limit
+  gh_api "repos/$ORG_NAME/$repo_name/contents/.github/workflows" ".[].name" "$repo_dir/sbom/workflow_names.json" 2>/dev/null || echo "  No workflows found"
+  
+  # Look for SBOM-related workflows
+  if [ -f "$repo_dir/sbom/workflow_names.json" ]; then
+    jq -r '.[]' "$repo_dir/sbom/workflow_names.json" 2>/dev/null | grep -i -E "sbom|cyclonedx|spdx|syft" > "$repo_dir/sbom/sbom_workflows.txt" 2>/dev/null || echo "  No SBOM workflows found" > "$repo_dir/sbom/sbom_workflows.txt"
+  fi
+  
+  # Check releases for SBOM artifacts
+  echo "  Checking for SBOM artifacts in releases..."
+  check_rate_limit
+  gh_api "repos/$ORG_NAME/$repo_name/releases/latest" "." "$repo_dir/sbom/latest_release.json" 2>/dev/null || echo "  No releases found" > "$repo_dir/sbom/latest_release.json"
+  
+  # Check if a release exists and look for SBOM assets
+  release_id=$(jq -r '.id' "$repo_dir/sbom/latest_release.json" 2>/dev/null)
+  if [ "$release_id" != "null" ] && [ -n "$release_id" ]; then
+    check_rate_limit
+    gh_api "repos/$ORG_NAME/$repo_name/releases/$release_id/assets" ".[].name" "$repo_dir/sbom/release_assets.json" 2>/dev/null
+    
+    # Look for SBOM-related assets
+    if [ -f "$repo_dir/sbom/release_assets.json" ]; then
+      jq -r '.[]' "$repo_dir/sbom/release_assets.json" 2>/dev/null | grep -i -E "sbom|cyclonedx|spdx|bom" > "$repo_dir/sbom/sbom_artifacts.txt" 2>/dev/null || echo "  No SBOM artifacts found" > "$repo_dir/sbom/sbom_artifacts.txt"
+    fi
+  fi
+  
+  # 4.8 Check for artifact signing and verification (NIST 800-161r1-upd1 SR-4, SR-10, SR-11)
+  echo "  Checking for artifact signing configuration..."
+  mkdir -p "$repo_dir/signing"
+  
+  # Look for signing-related workflows
+  if [ -f "$repo_dir/sbom/workflow_names.json" ]; then
+    jq -r '.[]' "$repo_dir/sbom/workflow_names.json" 2>/dev/null | grep -i -E "sign|cosign|sigstore|signature" > "$repo_dir/signing/signing_workflows.txt" 2>/dev/null || echo "  No signing workflows found" > "$repo_dir/signing/signing_workflows.txt"
+  fi
+  
+  # Check for signature artifacts
+  if [ "$release_id" != "null" ] && [ -n "$release_id" ]; then
+    if [ -f "$repo_dir/sbom/release_assets.json" ]; then
+      jq -r '.[]' "$repo_dir/sbom/release_assets.json" 2>/dev/null | grep -i -E "\.sig|\.asc|signature|intoto|provenance" > "$repo_dir/signing/signature_artifacts.txt" 2>/dev/null || echo "  No signature artifacts found" > "$repo_dir/signing/signature_artifacts.txt"
+    fi
+  fi
+  
+  # 4.9 Check for supply chain security tools and practices (NIST 800-161r1-upd1 SR-3, SR-11)
+  echo "  Checking for supply chain security tools..."
+  mkdir -p "$repo_dir/supply_chain"
+  
+  # Look for slsa, in-toto, or other provenance tools in workflows
+  if [ -f "$repo_dir/sbom/workflow_names.json" ]; then
+    jq -r '.[]' "$repo_dir/sbom/workflow_names.json" 2>/dev/null | grep -i -E "slsa|provenance|attestation|in-toto" > "$repo_dir/supply_chain/provenance_workflows.txt" 2>/dev/null || echo "  No provenance workflows found" > "$repo_dir/supply_chain/provenance_workflows.txt"
+  fi
+  
 done < "$OUTPUT_DIR/repo_list.txt"
 
 # 5. Generate FedRAMP/NIST Compliance Report
@@ -333,6 +386,51 @@ if [ -s "$OUTPUT_DIR/org_security/security_managers.json" ]; then
 else
   has_security_managers="No"
 fi
+
+# Count repositories with supply chain security features
+sbom_repos=0
+signing_repos=0
+provenance_repos=0
+dep_review_repos=0
+
+while IFS=, read -r repo_name default_branch; do
+  # Check for SBOM workflows or artifacts
+  if [ -s "$OUTPUT_DIR/repositories/$repo_name/sbom/sbom_workflows.txt" ] && \
+     [ ! -f "$OUTPUT_DIR/repositories/$repo_name/sbom/sbom_workflows.txt" -o \
+       "$(cat "$OUTPUT_DIR/repositories/$repo_name/sbom/sbom_workflows.txt")" != "  No SBOM workflows found" ]; then
+    ((sbom_repos++))
+  elif [ -s "$OUTPUT_DIR/repositories/$repo_name/sbom/sbom_artifacts.txt" ] && \
+       [ ! -f "$OUTPUT_DIR/repositories/$repo_name/sbom/sbom_artifacts.txt" -o \
+         "$(cat "$OUTPUT_DIR/repositories/$repo_name/sbom/sbom_artifacts.txt")" != "  No SBOM artifacts found" ]; then
+    ((sbom_repos++))
+  fi
+  
+  # Check for signing workflows or artifacts
+  if [ -s "$OUTPUT_DIR/repositories/$repo_name/signing/signing_workflows.txt" ] && \
+     [ ! -f "$OUTPUT_DIR/repositories/$repo_name/signing/signing_workflows.txt" -o \
+       "$(cat "$OUTPUT_DIR/repositories/$repo_name/signing/signing_workflows.txt")" != "  No signing workflows found" ]; then
+    ((signing_repos++))
+  elif [ -s "$OUTPUT_DIR/repositories/$repo_name/signing/signature_artifacts.txt" ] && \
+       [ ! -f "$OUTPUT_DIR/repositories/$repo_name/signing/signature_artifacts.txt" -o \
+         "$(cat "$OUTPUT_DIR/repositories/$repo_name/signing/signature_artifacts.txt")" != "  No signature artifacts found" ]; then
+    ((signing_repos++))
+  fi
+  
+  # Check for provenance workflows
+  if [ -s "$OUTPUT_DIR/repositories/$repo_name/supply_chain/provenance_workflows.txt" ] && \
+     [ ! -f "$OUTPUT_DIR/repositories/$repo_name/supply_chain/provenance_workflows.txt" -o \
+       "$(cat "$OUTPUT_DIR/repositories/$repo_name/supply_chain/provenance_workflows.txt")" != "  No provenance workflows found" ]; then
+    ((provenance_repos++))
+  fi
+  
+  # Check for dependency review enforcement
+  if [ -s "$OUTPUT_DIR/repositories/$repo_name/dependency_review.json" ]; then
+    dep_review_status=$(cat "$OUTPUT_DIR/repositories/$repo_name/dependency_review.json")
+    if [ "$dep_review_status" = "required" ]; then
+      ((dep_review_repos++))
+    fi
+  fi
+done < "$OUTPUT_DIR/repo_list.txt"
 
 # Create compliance report
 cat > "$OUTPUT_DIR/fedramp_nist_compliance_report.md" << EOF
@@ -392,6 +490,24 @@ cat > "$OUTPUT_DIR/fedramp_nist_compliance_report.md" << EOF
 - **AU-2/AU-3/AU-12 Audit Events and Content**
   - Audit logging enabled: Check $OUTPUT_DIR/org_security/audit_log_sample.json
 
+### NIST SP 800-161 Rev 1 Update 1 Supply Chain Security Controls
+
+#### Software Supply Chain Risk Management (SR)
+- **SR-4 Provenance and Authenticity**
+  - SBOM generation implemented: $(( sbom_repos * 100 / total_repos ))% of repositories
+  - Artifact signing configured: $(( signing_repos * 100 / total_repos ))% of repositories
+  - Provenance attestation present: $(( provenance_repos * 100 / total_repos ))% of repositories
+
+- **SR-10/SR-11 Component Validation**
+  - Dependency review enforcement: $(( dep_review_repos * 100 / total_repos ))% of repositories
+  - Signature verification: Check repository-specific signing workflows
+  - Software composition analysis: Check Dependabot configuration
+
+- **SR-3 Supply Chain Controls and Processes**
+  - Branch protection requirements: $(( protected_repos * 100 / total_repos ))% of repositories
+  - Automated vulnerability management: Check Dependabot settings
+  - Dependency update automation: Check Dependabot configuration
+
 ### FedRAMP-Specific Controls
 - **Secret Management (SC-12, SC-13)**
   - Secret scanning enabled: Check repository-specific settings
@@ -427,6 +543,15 @@ The following recommendations should be implemented to improve FedRAMP/NIST comp
 
 5. Configure audit logging and maintain logs for required retention periods
    - Consider setting up audit log streaming for long-term storage
+
+6. Implement NIST 800-161r1-upd1 supply chain security controls:
+   - Generate Software Bill of Materials (SBOM) in CycloneDX or SPDX format
+   - Sign artifacts with Sigstore/Cosign to provide provenance
+   - Implement SLSA framework requirements for build provenance
+   - Enforce dependency review for all pull requests
+   - Pin third-party actions to immutable references (SHA)
+   - Implement zero trust principles with least-privilege permissions
+   - Document supply chain incident response procedures
 
 ### Detailed Findings
 For detailed analysis of each repository and organization setting, review the JSON files in the output directory.

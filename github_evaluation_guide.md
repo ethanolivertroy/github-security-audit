@@ -1,6 +1,6 @@
-# GitHub FedRAMP and NIST 800-53 Compliance Evaluation Guide
+# GitHub FedRAMP and NIST 800-53/800-161 Compliance Evaluation Guide
 
-This guide provides a systematic approach for manually evaluating GitHub implementations for FedRAMP and NIST 800-53 Rev 5 compliance, complementing the automated `github_fedramp_audit.sh` script. It follows the same assessment areas as the script but provides step-by-step instructions for a hands-on evaluation, with special attention to supply chain security requirements from NIST 800-161 and the Executive Order 14028 on Improving the Nation's Cybersecurity.
+This guide provides a systematic approach for manually evaluating GitHub implementations for FedRAMP, NIST 800-53 Rev 5, and NIST 800-161 Rev 1 Update 1 compliance, complementing the automated `github_fedramp_audit.sh` script. It follows the same assessment areas as the script but provides step-by-step instructions for a hands-on evaluation, with special attention to supply chain security requirements from NIST 800-161r1-upd1 and the Executive Order 14028 on Improving the Nation's Cybersecurity.
 
 ## Table of Contents
 1. [Prerequisites](#prerequisites)
@@ -23,10 +23,13 @@ This guide provides a systematic approach for manually evaluating GitHub impleme
    - [Dependency Management](#dependency-management-sr-3-sa-9-sr-11)
    - [Software Bill of Materials](#software-bill-of-materials-sr-4-sr-8)
    - [Artifact Integrity and Verification](#artifact-integrity-and-verification-sr-4-sr-10-sr-11)
+   - [Build Provenance and Attestation](#build-provenance-and-attestation-sr-4-sr-9-sr-11)
+   - [Supply Chain Incident Response](#supply-chain-incident-response-sr-8-sr-13)
 6. [NIST Control Matrices](#nist-control-matrices)
    - [NIST 800-53 Controls](#nist-800-53-controls)
-   - [NIST 800-161 Supply Chain Risk Management Controls](#nist-800-161-supply-chain-risk-management-controls)
+   - [NIST 800-161 Rev. 1 Update 1 Supply Chain Risk Management Controls](#nist-800-161-rev-1-update-1-supply-chain-risk-management-controls)
    - [Executive Order 14028 Requirements](#executive-order-14028-requirements)
+   - [Zero Trust Architecture Requirements](#zero-trust-architecture-requirements)
 
 ## Prerequisites
 
@@ -381,7 +384,7 @@ gh api repos/$GH_ORG/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 
 ## Supply Chain Security
 
-This section addresses NIST SP 800-161 Rev. 1 requirements and the Executive Order 14028 on Improving the Nation's Cybersecurity.
+This section addresses NIST SP 800-161 Rev. 1 Update 1 (NIST 800-161r1-upd1) requirements and the Executive Order 14028 on Improving the Nation's Cybersecurity. Special attention is given to the enhanced supply chain security controls from the latest NIST 800-161 update.
 
 ### Dependency Management (SR-3, SA-9, SR-11)
 
@@ -420,16 +423,22 @@ gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.dependency_graph.status'
 2. Review SBOM workflow configuration if present
 3. Verify SBOM format complies with NTIA minimum elements
 4. Check SBOM distribution mechanism
+5. Verify SBOM includes provenance attestation
 
 #### API Verification
 ```bash
 # Check for SBOM workflow or configuration
 gh api repos/$GH_ORG/$REPO/contents/.github/workflows | jq '.[] | select(.name | contains("sbom"))' > sbom_workflow.json 2>/dev/null || echo "No SBOM workflow found"
 
+# Check specific SBOM tools in use (e.g., CycloneDX, SPDX, Syft)
+for workflow in $(gh api repos/$GH_ORG/$REPO/contents/.github/workflows --jq '.[].path'); do
+  gh api repos/$GH_ORG/$REPO/contents/$workflow --raw | grep -i -E "cyclonedx|spdx|syft|sbom-action" > sbom_tools.txt || echo "No SBOM tools found in $workflow"
+done
+
 # Check for SBOM artifacts in releases
 LATEST_RELEASE=$(gh api repos/$GH_ORG/$REPO/releases/latest 2>/dev/null | jq -r '.id' 2>/dev/null) || echo "No releases found"
 if [ "$LATEST_RELEASE" != "No releases found" ]; then
-  gh api repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE/assets | jq '.[] | select(.name | contains("sbom"))' > sbom_artifacts.json
+  gh api repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE/assets | jq '.[] | select(.name | contains("sbom") or .name | contains("cyclonedx") or .name | contains("spdx"))' > sbom_artifacts.json
 fi
 ```
 
@@ -440,7 +449,10 @@ fi
 - [ ] Process exists for SBOM review and validation
 - [ ] SBOM is available to stakeholders through appropriate channels
 - [ ] SBOM includes verified provenance information (EO 14028)
-- [ ] SBOM contains complete dependency tree (NIST 800-161)
+- [ ] SBOM contains complete dependency tree (NIST 800-161r1-upd1)
+- [ ] SBOM format follows CycloneDX or SPDX standards
+- [ ] SBOM includes vulnerability data (VEX when applicable)
+- [ ] SBOM is cryptographically signed for integrity
 
 ### Artifact Integrity and Verification (SR-4, SR-10, SR-11)
 
@@ -449,15 +461,21 @@ fi
 2. Check for artifact signing configuration
 3. Review workflows for integrity verification steps
 4. Verify cryptographic signature verification in deployment workflows
+5. Check for Sigstore/Cosign integration in workflows
 
 #### API Verification
 ```bash
 # Check for signing configurations in workflows
 gh api repos/$GH_ORG/$REPO/contents/.github/workflows | jq '.[] | select(.name | contains("sign") or .name | contains("verify"))' > signing_workflows.json 2>/dev/null || echo "No signing workflows found"
 
+# Look for Cosign or Sigstore in workflow contents
+for workflow in $(gh api repos/$GH_ORG/$REPO/contents/.github/workflows --jq '.[].path'); do
+  gh api repos/$GH_ORG/$REPO/contents/$workflow --raw | grep -i -E "cosign|sigstore|keyless" > cosign_usage.txt || echo "No Cosign usage found in $workflow"
+done
+
 # Check for signature verification on releases
 if [ "$LATEST_RELEASE" != "No releases found" ]; then
-  gh api repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE | jq '.assets[] | select(.name | contains(".sig") or .name | contains(".asc"))' > signature_artifacts.json
+  gh api repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE | jq '.assets[] | select(.name | contains(".sig") or .name | contains(".asc") or .name | contains("sbom"))' > signature_artifacts.json
 fi
 ```
 
@@ -467,7 +485,10 @@ fi
 - [ ] Secure key management process exists for signing keys
 - [ ] Chain of custody is maintained through signature verification
 - [ ] Artifact hashes are published with releases
-- [ ] Immutable build records are maintained (NIST 800-161)
+- [ ] Immutable build records are maintained (NIST 800-161r1-upd1)
+- [ ] Keyless signing is implemented where appropriate (Sigstore)
+- [ ] Signature verification is automated in deployment pipelines
+- [ ] Signature format follows industry standards
 
 ## NIST Control Matrices
 
@@ -500,22 +521,23 @@ The following matrix maps key GitHub settings to NIST 800-53 controls:
 | **SR-3** | Supply Chain Protection | Dependency management | Dependency review enforcement |
 | **SR-4** | Component Authenticity | SBOMs, signing | SBOM generation, artifact signing |
 
-### NIST 800-161 Supply Chain Risk Management Controls
+### NIST 800-161 Rev. 1 Update 1 Supply Chain Risk Management Controls
 
-The following matrix maps GitHub features to NIST 800-161 controls for supply chain risk management:
+The following matrix maps GitHub features to NIST 800-161r1-upd1 controls for supply chain risk management:
 
 | Control | Description | GitHub Features | Evaluation Areas |
 |---------|-------------|----------------|------------------|
 | **SR-2** | Supply Chain Risk Management Plan | Organization security policies | Security policy documentation, dependency management strategy |
 | **SR-3** | Supply Chain Controls and Processes | Dependency management | Dependency review workflow, Dependabot configuration |
-| **SR-4** | Provenance | SBOM generation | SBOM format compliance, dependency origin verification |
-| **SR-5** | Acquisition Strategies | Verified dependencies | Third-party action verification, dependency approval process |
-| **SR-6** | Supplier Assessments and Reviews | Dependency insights | Dependency publisher verification, action verification |
-| **SR-8** | Notification Agreements | Security advisories | Security advisory monitoring, vulnerability alerts |
-| **SR-9** | Tamper Protection | Code signing | Artifact signing, commit verification |
-| **SR-10** | Inspection of Systems or Components | Code scanning | CodeQL analysis, custom code scanning tools integration |
-| **SR-11** | Component Authenticity | Artifact signing | Package signature verification, artifact hash verification |
+| **SR-4** | Provenance | SBOM generation, attestation | SBOM format compliance, dependency origin verification, SLSA provenance |
+| **SR-5** | Acquisition Strategies | Verified dependencies | Third-party action verification, dependency approval process, pinned dependencies |
+| **SR-6** | Supplier Assessments and Reviews | Dependency insights | Dependency publisher verification, action verification, maintainer activity |
+| **SR-8** | Notification Agreements | Security advisories | Security advisory monitoring, vulnerability alerts, CVE mapping |
+| **SR-9** | Tamper Protection | Code signing | Artifact signing, commit verification, branch protection |
+| **SR-10** | Inspection of Systems or Components | Code scanning | CodeQL analysis, custom code scanning tools integration, SAST/DAST integration |
+| **SR-11** | Component Authenticity | Artifact signing | Package signature verification, artifact hash verification, provenance validation |
 | **SR-12** | Component Disposal | Repository archiving | Archiving policies, dependency cleanup |
+| **SR-13** | Supply Chain Incident Management | Response plans | Supply chain compromise procedures, dependency remediation process |
 
 ### Executive Order 14028 Requirements
 
@@ -523,13 +545,14 @@ The following matrix identifies how GitHub features address key requirements fro
 
 | Requirement | GitHub Features | Evaluation Areas |
 |-------------|----------------|------------------|
-| Software Bill of Materials | SBOM generation | SBOM workflow configuration, NTIA minimum element compliance |
-| Secure Software Development | Secure development lifecycle | Branch protection, code reviews, automated security testing |
-| Artifact Signing | Action and package signing | Cryptographic signature verification, signing workflow |
-| Vulnerability Management | Dependabot | Alert severity, remediation timeframes, automated updates |
-| Multi-Factor Authentication | 2FA enforcement | Organization 2FA requirement, phishing-resistant options |
-| Verifiable Artifacts | Release verification | Signature verification, provenance attestation |
-| Zero Trust Architecture | Fine-grained access | Repository permissions, IP restrictions, token scoping |
+| Software Bill of Materials | SBOM generation | SBOM workflow configuration, NTIA minimum element compliance, VEX integration |
+| Secure Software Development | Secure development lifecycle | Branch protection, code reviews, automated security testing, reproducible builds |
+| Artifact Signing | Action and package signing | Cryptographic signature verification, signing workflow, Sigstore integration |
+| Vulnerability Management | Dependabot | Alert severity, remediation timeframes, automated updates, dependency pinning |
+| Multi-Factor Authentication | 2FA enforcement | Organization 2FA requirement, phishing-resistant options, SSO integration |
+| Verifiable Artifacts | Release verification | Signature verification, provenance attestation, SLSA framework adherence |
+| Zero Trust Architecture | Fine-grained access | Repository permissions, IP restrictions, token scoping, ephemeral credentials |
+| Software Supply Chain Security | SLSA framework | Build provenance, tamper resistance, build service security |
 
 ## Documentation Template
 
@@ -554,12 +577,16 @@ Compile your findings into a comprehensive compliance report that includes:
 ## Additional Resources
 
 - [NIST 800-53 Rev 5](https://csrc.nist.gov/publications/detail/sp/800-53/rev-5/final) - Security and Privacy Controls for Information Systems and Organizations
-- [NIST 800-161 Rev 1](https://csrc.nist.gov/publications/detail/sp/800-161/rev-1/final) - Cybersecurity Supply Chain Risk Management Practices for Systems and Organizations
+- [NIST 800-161 Rev 1 Update 1](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-161r1-upd1.pdf) - Cybersecurity Supply Chain Risk Management Practices for Systems and Organizations
 - [Executive Order 14028](https://www.whitehouse.gov/briefing-room/presidential-actions/2021/05/12/executive-order-on-improving-the-nations-cybersecurity/) - Improving the Nation's Cybersecurity
 - [FedRAMP Security Controls](https://www.fedramp.gov/assets/resources/documents/FedRAMP_Security_Controls_Baseline.xlsx) - FedRAMP Security Control Baselines
 - [NTIA SBOM Minimum Elements](https://www.ntia.gov/report/2021/minimum-elements-software-bill-materials-sbom) - Minimum Requirements for SBOMs
+- [SLSA Framework](https://slsa.dev/) - Supply chain Levels for Software Artifacts
+- [Sigstore](https://www.sigstore.dev/) - Keyless signing for software artifacts
 - [GitHub Security Documentation](https://docs.github.com/en/enterprise-cloud@latest/code-security/getting-started/github-security-features) - Overview of GitHub Security Features
 - [GitHub Advanced Security Documentation](https://docs.github.com/en/enterprise-cloud@latest/get-started/learning-about-github/about-github-advanced-security) - Information on GitHub Advanced Security offerings
+- [GitHub Dependency Review Action](https://github.com/actions/dependency-review-action) - Automated dependency review for pull requests
+- [GitHub SBOM Generator Action](https://github.com/marketplace/actions/software-bill-of-materials-sbom-generator) - SBOM generation in GitHub Actions
 
 ## Automated Evaluation Option
 
