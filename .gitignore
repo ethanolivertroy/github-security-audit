@@ -1,0 +1,49 @@
+# Audit output directories
+github_compliance_audit_*/
+github_fedramp_audit_*/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+.DS_Store
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Environment files with sensitive data
+.env
+.env.local
+*.env
+
+# GitHub tokens and credentials
+.github_token
+.credentials
+*.token
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+
+# Test output
+test_output/
+test_results/
+
+# Cache files
+.cache/
+*.cache
+
+# Local configuration overrides
+*.local.md
+
+# Parallel processing temp files
+parallel_*.tmp
+
+# JSON output files (if running locally for testing)
+test_org_output/
+sample_audit_output/

@@ -1,12 +1,30 @@
-# GitHub FedRAMP/NIST 800-53/800-161 Compliance Audit Tool
+# GitHub Multi-Framework Compliance Audit Tool
 
-A comprehensive Bash script for auditing GitHub organizations against FedRAMP, NIST 800-53, and NIST 800-161 Rev. 1 Update 1 security requirements.
+A comprehensive Bash script for auditing GitHub organizations against multiple compliance frameworks including FedRAMP, NIST 800-53/800-161, SOC 2, HIPAA, ISO 27001, and PCI-DSS.
 
 ## Overview
 
-This tool performs a comprehensive security audit of GitHub organizations to assess compliance with FedRAMP, NIST 800-53, and NIST 800-161 Rev. 1 Update 1 security requirements. It collects data on organization-level and repository-level security settings and generates a detailed report that maps findings to specific compliance controls, with special attention to software supply chain security requirements.
+This tool performs a comprehensive security audit of GitHub organizations to assess compliance with multiple regulatory frameworks:
+
+- **FedRAMP** - Federal Risk and Authorization Management Program
+- **NIST 800-53** - Security and Privacy Controls
+- **NIST 800-161** - Supply Chain Risk Management
+- **SOC 2** - Service Organization Control 2 (Type II)
+- **HIPAA** - Health Insurance Portability and Accountability Act
+- **ISO 27001** - Information Security Management Systems
+- **PCI-DSS** - Payment Card Industry Data Security Standard
+
+The tool collects data on organization-level and repository-level security settings and generates framework-specific compliance reports that map findings to relevant controls and requirements.
 
 ## Features
+
+### Performance & Reliability
+- **Parallel Processing**: Scans repositories concurrently for 10x+ performance improvement
+- **Robust Error Handling**: Automatic retry logic with exponential backoff
+- **Progress Tracking**: Real-time progress indicators during audit
+- **Secure Authentication**: Environment variable support to avoid token exposure
+
+### Security Assessments
 
 - **Organization-Level Assessment**
   - Two-factor authentication enforcement
@@ -14,15 +32,22 @@ This tool performs a comprehensive security audit of GitHub organizations to ass
   - IP allow lists settings
   - Audit log configuration
   - Organization-wide security policies
+  - GitHub Advanced Security status
+  - Enterprise security settings
+  - Organization webhooks audit
+  - GitHub Apps permissions review
 
 - **Repository-Level Assessment**
   - Branch protection rules
+  - Repository rulesets (new GitHub feature)
   - Dependabot alerts and security updates
   - Code scanning configuration
   - Secret scanning with push protection
+  - Push protection bypass tracking
   - CODEOWNERS file verification
   - Security policy verification
   - CI/CD security checks
+  - Workflow dependency pinning analysis
 
 - **Supply Chain Security Assessment**
   - Software Bill of Materials (SBOM) generation
@@ -30,17 +55,27 @@ This tool performs a comprehensive security audit of GitHub organizations to ass
   - Build provenance and attestation
   - Dependency review enforcement
   - Supply chain vulnerability management
+  - Action pinning verification
 
-- **Compliance Mapping**
-  - Maps findings to NIST SP 800-53 control families
-  - Maps findings to NIST SP 800-161 Rev. 1 Update 1 supply chain controls
-  - Specifically addresses FedRAMP requirements
-  - Provides compliance metrics and statistics
+### Reporting & Compliance
+
+- **Multi-Framework Support**: Generate reports for individual frameworks or all at once
+- **Risk Scoring**: Executive summary with 0-100 risk score and compliance level assessment
+- **Framework-Specific Mapping**: 
+  - FedRAMP/NIST: Maps to SP 800-53 and 800-161 control families
+  - SOC 2: Maps to Trust Service Criteria (TSC)
+  - HIPAA: Maps to Security Rule requirements (45 CFR § 164.308-312)
+  - ISO 27001: Maps to Annex A controls
+  - PCI-DSS: Maps to v4.0 requirements
+- **Actionable Insights**: Framework-specific remediation steps with priority levels
+- **Compliance Gaps**: Clear identification of gaps for each framework
+- **Metrics Dashboard**: Comprehensive security metrics and statistics
 
 ## Prerequisites
 
-- GitHub CLI (`gh`) installed and configured
+- GitHub CLI (`gh`) installed and configured (or GitHub token)
 - `jq` for JSON processing
+- `parallel` for concurrent processing
 - Bash shell environment
 - GitHub account with appropriate permissions:
   - Admin access to the organization to be audited
@@ -50,15 +85,15 @@ This tool performs a comprehensive security audit of GitHub organizations to ass
 
 1. Download the script file:
    ```bash
-   curl -O https://raw.githubusercontent.com/yourusername/github-fedramp-audit/main/github_fedramp_audit.sh
+   curl -O https://raw.githubusercontent.com/yourusername/github-compliance-audit/main/github_compliance_audit.sh
    ```
 
 2. Make the script executable:
    ```bash
-   chmod +x github_fedramp_audit.sh
+   chmod +x github_compliance_audit.sh
    ```
 
-3. Ensure GitHub CLI is installed and authenticated:
+3. Ensure dependencies are installed:
    ```bash
    # Install GitHub CLI (if not already installed)
    # For Ubuntu/Debian:
@@ -74,21 +109,47 @@ This tool performs a comprehensive security audit of GitHub organizations to ass
    # For macOS:
    brew install jq
    
-   # Authenticate with GitHub
+   # Install GNU parallel
+   # For Ubuntu/Debian:
+   sudo apt install parallel
+   
+   # For macOS:
+   brew install parallel
+   
+   # Authenticate with GitHub (if using CLI)
    gh auth login
    ```
 
 ## Usage
 
-Run the script with your organization name and optionally a GitHub token:
-
 ```bash
-# Using GitHub CLI authentication
-./github_fedramp_audit.sh your-organization-name
+# Basic usage - runs audit for all frameworks
+./github_compliance_audit.sh your-organization-name
 
-# Using a GitHub token (recommended for CI/CD or headless environments)
-./github_fedramp_audit.sh your-organization-name your-github-token
+# Audit for specific framework
+./github_compliance_audit.sh your-organization-name fedramp
+./github_compliance_audit.sh your-organization-name soc2
+./github_compliance_audit.sh your-organization-name hipaa
+./github_compliance_audit.sh your-organization-name iso27001
+./github_compliance_audit.sh your-organization-name pci-dss
+
+# Using environment variable for token (recommended - more secure)
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+./github_compliance_audit.sh your-organization-name [framework]
+
+# Using GitHub CLI authentication
+./github_compliance_audit.sh your-organization-name [framework]
 ```
+
+### Supported Frameworks
+
+- `all` (default) - Generates a combined report for all frameworks
+- `fedramp` - Federal Risk and Authorization Management Program
+- `nist` - NIST 800-53 and 800-161 controls
+- `soc2` - SOC 2 Type II Trust Service Criteria
+- `hipaa` - HIPAA Security Rule requirements
+- `iso27001` - ISO 27001:2022 Annex A controls
+- `pci-dss` - PCI-DSS v4.0 requirements
 
 The script will create an output directory with all collected data and a comprehensive compliance report.
 

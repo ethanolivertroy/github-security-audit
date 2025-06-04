@@ -1,6 +1,14 @@
-# GitHub FedRAMP and NIST 800-53/800-161 Compliance Evaluation Guide
+# GitHub Multi-Framework Compliance Evaluation Guide
 
-This guide provides a systematic approach for manually evaluating GitHub implementations for FedRAMP, NIST 800-53 Rev 5, and NIST 800-161 Rev 1 Update 1 compliance, complementing the automated `github_fedramp_audit.sh` script. It follows the same assessment areas as the script but provides step-by-step instructions for a hands-on evaluation, with special attention to supply chain security requirements from NIST 800-161r1-upd1 and the Executive Order 14028 on Improving the Nation's Cybersecurity.
+This guide provides a systematic approach for manually evaluating GitHub implementations for compliance with multiple regulatory frameworks:
+- **FedRAMP** and **NIST 800-53 Rev 5**
+- **NIST 800-161 Rev 1 Update 1** (Supply Chain Risk Management)
+- **SOC 2 Type II** (Trust Service Criteria)
+- **HIPAA Security Rule** (45 CFR § 164.308-312)
+- **ISO 27001:2022** (Annex A Controls)
+- **PCI-DSS v4.0** (Payment Card Industry Data Security Standard)
+
+This guide complements the automated `github_compliance_audit.sh` script and provides step-by-step instructions for hands-on evaluation, with special attention to supply chain security requirements from NIST 800-161r1-upd1 and Executive Order 14028 on Improving the Nation's Cybersecurity.
 
 ## Table of Contents
 1. [Prerequisites](#prerequisites)
@@ -47,9 +55,57 @@ Before beginning your evaluation, ensure you have:
    - Web browser for GitHub Admin UI access
 4. **Documentation** of your organization's security requirements
 
+## Framework Control Mapping
+
+This section maps GitHub security features to controls across different compliance frameworks:
+
+### Universal Security Controls
+
+| GitHub Feature | FedRAMP/NIST | SOC 2 | HIPAA | ISO 27001 | PCI-DSS |
+|----------------|--------------|--------|--------|-----------|----------|
+| Two-Factor Authentication | AC-2, IA-2 | CC6.1, CC6.7 | 164.308(a)(3) | A.9.2 | Req 8.3 |
+| Branch Protection | CM-2, CM-3 | CC6.1, CC8.1 | 164.308(a)(4) | A.9.1, A.12.1 | Req 6.3.2 |
+| Code Scanning | SI-3, RA-5 | CC7.1 | 164.308(a)(1) | A.12.2, A.12.6 | Req 6.3.1 |
+| Audit Logging | AU-2, AU-3 | CC7.2, CC7.3 | 164.312(b) | A.12.4 | Req 10.2 |
+| Secret Scanning | SC-12, SI-4 | CC7.1 | 164.312(a)(2) | A.12.2 | Req 3.4 |
+| Access Control | AC-3, AC-6 | CC6.3 | 164.312(a)(1) | A.9.1, A.9.4 | Req 7.1 |
+| Vulnerability Management | RA-5, SI-2 | CC7.1 | 164.308(a)(1) | A.12.6 | Req 6.3.1 |
+
+### Framework-Specific Requirements
+
+#### SOC 2 Trust Service Criteria
+- **CC6.1-CC6.8**: Logical and Physical Access Controls → GitHub 2FA, Branch Protection, RBAC
+- **CC7.1-CC7.4**: System Operations → GitHub Advanced Security, Audit Logs
+- **CC8.1**: Change Management → PR Reviews, Branch Protection Rules
+
+#### HIPAA Security Rule
+- **Administrative Safeguards (164.308)**: Access Management, Risk Analysis, Workforce Security
+- **Technical Safeguards (164.312)**: Access Control, Audit Controls, Integrity, Transmission Security
+- **100% Requirements**: Branch protection, audit logging, and encryption are mandatory
+
+#### ISO 27001:2022
+- **A.5**: Organizational controls → Security policies, roles
+- **A.8**: Asset management → Repository inventory, CODEOWNERS
+- **A.9**: Access control → Authentication, authorization
+- **A.12**: Operations security → Monitoring, vulnerability management
+
+#### PCI-DSS v4.0
+- **Requirements 1-2**: Network Security → Repository access controls
+- **Requirements 3-4**: Data Protection → Secret scanning, encryption
+- **Requirements 6**: Secure Development → Code scanning, PR reviews
+- **Requirements 7-8**: Access Control → RBAC, MFA
+- **Requirements 10-11**: Monitoring & Testing → Audit logs, vulnerability scanning
+
 ## Organization-level Security
 
 ### Account Management (AC-2)
+
+**Framework Mappings:**
+- **FedRAMP/NIST**: AC-2, AC-2(1), AC-2(4)
+- **SOC 2**: CC6.1, CC6.2
+- **HIPAA**: 164.308(a)(3), 164.308(a)(4)
+- **ISO 27001**: A.9.2
+- **PCI-DSS**: Req 7.1, 8.1
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → People**
@@ -133,6 +189,13 @@ gh api orgs/$GH_ORG | jq '.ip_allow_list_enabled_for_installed_apps, .ip_allow_l
 
 ### Authentication Requirements (IA-2, IA-5)
 
+**Framework Mappings:**
+- **FedRAMP/NIST**: IA-2, IA-2(1), IA-5
+- **SOC 2**: CC6.1, CC6.7
+- **HIPAA**: 164.308(a)(3), 164.312(a)(1)
+- **ISO 27001**: A.9.2, A.9.4
+- **PCI-DSS**: Req 8.3, 8.4
+
 #### Admin UI Steps
 1. Navigate to **Organization Settings → Authentication security**
 2. Check if two-factor authentication is required for the organization
@@ -157,6 +220,13 @@ gh api orgs/$GH_ORG/saml > saml_settings.json 2>/dev/null || echo "SAML settings
 - [ ] Authentication method complies with NIST 800-63 guidelines
 
 ### Audit Logging (AU-2, AU-3, AU-12)
+
+**Framework Mappings:**
+- **FedRAMP/NIST**: AU-2, AU-3, AU-12
+- **SOC 2**: CC7.2, CC7.3
+- **HIPAA**: 164.312(b) (Required)
+- **ISO 27001**: A.12.4
+- **PCI-DSS**: Req 10.2, 10.3
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → Audit log**
@@ -588,11 +658,42 @@ Compile your findings into a comprehensive compliance report that includes:
 - [GitHub Dependency Review Action](https://github.com/actions/dependency-review-action) - Automated dependency review for pull requests
 - [GitHub SBOM Generator Action](https://github.com/marketplace/actions/software-bill-of-materials-sbom-generator) - SBOM generation in GitHub Actions
 
+## Framework-Specific Evaluation Guidelines
+
+### SOC 2 Type II Evaluation Focus
+- **Access Controls**: Verify 90%+ branch protection coverage
+- **Monitoring**: Ensure continuous security monitoring is enabled
+- **Incident Response**: Document and test incident response procedures
+- **Change Management**: Verify all changes go through PR review process
+
+### HIPAA Security Rule Evaluation Focus
+- **100% Requirements**: Branch protection, audit logging, and access controls must be at 100%
+- **Encryption**: Verify data encryption in transit and at rest
+- **Audit Controls**: Ensure comprehensive audit logging with appropriate retention
+- **Access Management**: Verify strict access controls and authentication
+
+### ISO 27001:2022 Evaluation Focus
+- **ISMS Documentation**: Verify information security policies exist
+- **Risk Management**: Document risk assessment and treatment
+- **Asset Management**: Ensure repository inventory and ownership (CODEOWNERS)
+- **Continuous Improvement**: Evidence of regular security reviews
+
+### PCI-DSS v4.0 Evaluation Focus
+- **Zero Tolerance**: No open vulnerabilities in production code
+- **100% Code Review**: All code must go through PR review
+- **Strong Authentication**: MFA required for all users
+- **Audit Logging**: Comprehensive logging of all access and changes
+- **Secure Development**: GHAS must be enabled for vulnerability scanning
+
 ## Automated Evaluation Option
 
-For automated assessment, consider using the `github_fedramp_audit.sh` script included in this repository. The script provides a comprehensive automated assessment that can be used alongside this manual evaluation guide.
+For automated assessment, use the `github_compliance_audit.sh` script included in this repository. The script supports multiple compliance frameworks:
 
 Usage:
 ```bash
-./github_fedramp_audit.sh <organization-name> [github-token]
+# All frameworks
+./github_compliance_audit.sh <organization-name>
+
+# Specific framework
+./github_compliance_audit.sh <organization-name> [fedramp|soc2|hipaa|iso27001|pci-dss]
 ```
