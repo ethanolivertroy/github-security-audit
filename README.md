@@ -16,6 +16,8 @@ This tool performs a comprehensive security audit of GitHub organizations to ass
 
 The tool collects data on organization-level and repository-level security settings and generates framework-specific compliance reports that map findings to relevant controls and requirements.
 
+<img src="graphic.webp" width="500">
+
 ## Features
 
 ### Performance & Reliability
