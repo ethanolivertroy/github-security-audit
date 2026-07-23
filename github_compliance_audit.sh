@@ -28,7 +28,14 @@ if [ -z "$ORG_NAME" ]; then
 fi
 
 # Validate framework
-if [[ ! " ${SUPPORTED_FRAMEWORKS[@]} " =~ " ${FRAMEWORK} " ]]; then
+framework_valid=false
+for supported in "${SUPPORTED_FRAMEWORKS[@]}"; do
+  if [ "$FRAMEWORK" = "$supported" ]; then
+    framework_valid=true
+    break
+  fi
+done
+if [ "$framework_valid" != "true" ]; then
   echo "Error: Invalid framework '$FRAMEWORK'"
   echo "Supported frameworks: ${SUPPORTED_FRAMEWORKS[*]}"
   exit 1
@@ -58,7 +65,7 @@ done
 # Setup authentication
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   echo "Using GitHub token from environment variable"
-  AUTH_HEADER="Authorization: token $GITHUB_TOKEN"
+  AUTH_HEADER="Authorization: Bearer $GITHUB_TOKEN"
   AUTH_METHOD="token"
 else
   # Check for GitHub CLI authentication
@@ -76,7 +83,7 @@ else
   AUTH_METHOD="cli"
   # Export token for parallel jobs
   export GITHUB_TOKEN=$(gh auth token)
-  AUTH_HEADER="Authorization: token $GITHUB_TOKEN"
+  AUTH_HEADER="Authorization: Bearer $GITHUB_TOKEN"
 fi
 
 # Utility Functions
@@ -596,15 +603,21 @@ done < "$OUTPUT_DIR/repo_list.txt"
 
 # Calculate percentages safely
 if [ "$total_repos" -eq 0 ]; then
-  total_repos=1  # Prevent division by zero
+  echo "Warning: No repositories found for organization $ORG_NAME"
+  protected_percentage=0
+  rulesets_percentage=0
+  ghas_percentage=0
+  codeowners_percentage=0
+  sbom_percentage=0
+  signing_percentage=0
+else
+  protected_percentage=$((protected_repos * 100 / total_repos))
+  rulesets_percentage=$((rulesets_repos * 100 / total_repos))
+  ghas_percentage=$((ghas_repos * 100 / total_repos))
+  codeowners_percentage=$((codeowners_repos * 100 / total_repos))
+  sbom_percentage=$((sbom_repos * 100 / total_repos))
+  signing_percentage=$((signing_repos * 100 / total_repos))
 fi
-
-protected_percentage=$((protected_repos * 100 / total_repos))
-rulesets_percentage=$((rulesets_repos * 100 / total_repos))
-ghas_percentage=$((ghas_repos * 100 / total_repos))
-codeowners_percentage=$((codeowners_repos * 100 / total_repos))
-sbom_percentage=$((sbom_repos * 100 / total_repos))
-signing_percentage=$((signing_repos * 100 / total_repos))
 
 # Calculate risk score (0-100, lower is better)
 risk_score=100
@@ -1093,35 +1106,35 @@ EOF
 
 # Add critical findings
 if [ "$two_factor_required" != "true" ]; then
-  echo "- **Enable mandatory 2FA**: Organization does not require two-factor authentication" >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md"
+  echo "- **Enable mandatory 2FA**: Organization does not require two-factor authentication" >> "$REPORT_FILE"
 fi
 
 if [ "$ghas_enabled" != "true" ]; then
-  echo "- **Enable GitHub Advanced Security**: GHAS provides critical security scanning capabilities" >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md"
+  echo "- **Enable GitHub Advanced Security**: GHAS provides critical security scanning capabilities" >> "$REPORT_FILE"
 fi
 
 if [ $protected_percentage -lt 50 ]; then
-  echo "- **Implement branch protection**: Only $protected_percentage% of repositories have protected branches" >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md"
+  echo "- **Implement branch protection**: Only $protected_percentage% of repositories have protected branches" >> "$REPORT_FILE"
 fi
 
-cat >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md" << EOF
+cat >> "$REPORT_FILE" << EOF
 
 #### 🟡 High Priority Improvements
 EOF
 
 if [ $sbom_percentage -lt 50 ]; then
-  echo "- Generate SBOMs for all repositories (currently $sbom_percentage%)" >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md"
+  echo "- Generate SBOMs for all repositories (currently $sbom_percentage%)" >> "$REPORT_FILE"
 fi
 
 if [ $signing_percentage -lt 50 ]; then
-  echo "- Implement artifact signing (currently $signing_percentage%)" >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md"
+  echo "- Implement artifact signing (currently $signing_percentage%)" >> "$REPORT_FILE"
 fi
 
 if [ $rulesets_percentage -lt 50 ]; then
-  echo "- Configure repository rulesets for advanced controls (currently $rulesets_percentage%)" >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md"
+  echo "- Configure repository rulesets for advanced controls (currently $rulesets_percentage%)" >> "$REPORT_FILE"
 fi
 
-cat >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md" << EOF
+cat >> "$REPORT_FILE" << EOF
 
 #### 🟢 Recommended Enhancements
 - Implement automated compliance scanning in CI/CD pipelines
@@ -1156,6 +1169,32 @@ cat >> "$OUTPUT_DIR/fedramp_nist_compliance_report.md" << EOF
 For detailed findings per repository, review the JSON files in the output directory.
 EOF
 }
+
+# Assign report output path per framework
+case "$FRAMEWORK" in
+  all)
+    REPORT_FILE="$OUTPUT_DIR/multi_framework_compliance_report.md"
+    ;;
+  fedramp|nist)
+    REPORT_FILE="$OUTPUT_DIR/fedramp_nist_compliance_report.md"
+    ;;
+  soc2)
+    REPORT_FILE="$OUTPUT_DIR/soc2_compliance_report.md"
+    ;;
+  hipaa)
+    REPORT_FILE="$OUTPUT_DIR/hipaa_compliance_report.md"
+    ;;
+  iso27001)
+    REPORT_FILE="$OUTPUT_DIR/iso27001_compliance_report.md"
+    ;;
+  pci-dss)
+    REPORT_FILE="$OUTPUT_DIR/pci_dss_compliance_report.md"
+    ;;
+  *)
+    echo "Error: Unhandled framework '$FRAMEWORK' when assigning REPORT_FILE"
+    exit 1
+    ;;
+esac
 
 # Generate report based on selected framework
 if [ "$FRAMEWORK" = "all" ]; then

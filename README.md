@@ -31,7 +31,6 @@ The tool collects data on organization-level and repository-level security setti
 - **Organization-Level Assessment**
   - Two-factor authentication enforcement
   - Security manager role configuration
-  - IP allow lists settings
   - Audit log configuration
   - Organization-wide security policies
   - GitHub Advanced Security status
@@ -87,7 +86,7 @@ The tool collects data on organization-level and repository-level security setti
 
 1. Download the script file:
    ```bash
-   curl -O https://raw.githubusercontent.com/yourusername/github-compliance-audit/main/github_compliance_audit.sh
+   curl -O https://raw.githubusercontent.com/ethanolivertroy/github-security-audit/main/github_compliance_audit.sh
    ```
 
 2. Make the script executable:
@@ -220,7 +219,12 @@ To generate a GitHub token:
 10. Click "Generate token"
 11. Copy the token immediately (you won't be able to see it again)
 
-Use this token when running the script: `./github_fedramp_audit.sh your-organization-name your-token`
+Use this token when running the script:
+
+```bash
+export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+./github_compliance_audit.sh your-organization-name [framework]
+```
 
 ## Output
 
@@ -243,11 +247,15 @@ The tool generates the following outputs:
   - `/[repo_name]/secret_scanning_alerts.json`: Secret scanning results
   - And more...
 
-- `fedramp_nist_compliance_report.md`: Comprehensive compliance report with:
-  - Compliance summary statistics
-  - Mapping to NIST 800-53 controls
-  - FedRAMP-specific requirements assessment
-  - Detailed recommendations
+- Framework-specific compliance reports (filename depends on the selected framework):
+  - `all` → `multi_framework_compliance_report.md`
+  - `fedramp` / `nist` → `fedramp_nist_compliance_report.md`
+  - `soc2` → `soc2_compliance_report.md`
+  - `hipaa` → `hipaa_compliance_report.md`
+  - `iso27001` → `iso27001_compliance_report.md`
+  - `pci-dss` → `pci_dss_compliance_report.md`
+
+  Reports include compliance summary statistics, control mappings, and remediation recommendations.
 
 ### Sample Output
 
