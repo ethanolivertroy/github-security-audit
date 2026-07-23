@@ -1,14 +1,17 @@
 # GitHub Multi-Framework Compliance Evaluation Guide
 
-This guide provides a systematic approach for manually evaluating GitHub implementations for compliance with multiple regulatory frameworks:
-- **FedRAMP** and **NIST 800-53 Rev 5**
-- **NIST 800-161 Rev 1 Update 1** (Supply Chain Risk Management)
-- **SOC 2 Type II** (Trust Service Criteria)
-- **HIPAA Security Rule** (45 CFR § 164.308-312)
-- **ISO 27001:2022** (Annex A Controls)
-- **PCI-DSS v4.0** (Payment Card Industry Data Security Standard)
+The audit script tells you what the API can see. This guide is for everything else: the clicks, the policy questions, and the evidence an assessor will actually ask for.
 
-This guide complements the automated `github_compliance_audit.sh` script and provides step-by-step instructions for hands-on evaluation, with special attention to supply chain security requirements from NIST 800-161r1-upd1 and Executive Order 14028 on Improving the Nation's Cybersecurity.
+Work through org settings, representative repositories, CI/CD, and supply chain controls against:
+
+- **FedRAMP** and **NIST 800-53 Rev 5**
+- **NIST 800-161 Rev 1 Update 1** (supply chain risk management)
+- **SOC 2 Type II** (Trust Service Criteria)
+- **HIPAA Security Rule** (45 CFR § 164.308–312)
+- **ISO 27001:2022** (Annex A)
+- **PCI-DSS v4.0**
+
+Each section pairs Admin UI steps with `gh api` checks and a short checklist. Supply chain material leans on NIST 800-161r1-upd1 and Executive Order 14028. Use this beside `github_compliance_audit.sh`, not instead of it.
 
 ## Table of Contents
 1. [Prerequisites](#prerequisites)
@@ -41,23 +44,20 @@ This guide complements the automated `github_compliance_audit.sh` script and pro
 
 ## Prerequisites
 
-Before beginning your evaluation, ensure you have:
+Before you start:
 
-1. **Administrative access** to the GitHub organization being evaluated
-2. **Personal access token** with appropriate scopes:
+1. **Admin access** to the GitHub organization under review
+2. **A token** (or `gh` session) with the scopes you need, plus the org slug:
    ```
    export GH_TOKEN="your-github-token"
    export GH_ORG="your-organization-name"
    ```
-3. **Required tools**:
-   - GitHub CLI (`gh`) installed and authenticated
-   - Command line with `curl` and `jq` installed
-   - Web browser for GitHub Admin UI access
-4. **Documentation** of your organization's security requirements
+3. **Tools**: `gh`, `curl`, `jq`, and a browser for the Admin UI
+4. **Your baseline**: the security requirements or control set you are evaluating against
 
 ## Framework Control Mapping
 
-This section maps GitHub security features to controls across different compliance frameworks:
+GitHub features rarely map one-to-one to a single framework. Start here when you need the crosswalk:
 
 ### Universal Security Controls
 
@@ -255,7 +255,7 @@ fi
 
 ## Repository-level Security
 
-Select a representative sample of repositories for this evaluation. For each repository, perform the following checks:
+Do not try to click through every repo on day one. Pick a representative sample (critical production services, high-traffic libs, and a couple of quiet ones), then run the same checks on each.
 
 ### Branch Protection (CM-2, CM-3, CM-5)
 
@@ -454,7 +454,7 @@ gh api repos/$GH_ORG/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 
 ## Supply Chain Security
 
-This section addresses NIST SP 800-161 Rev. 1 Update 1 (NIST 800-161r1-upd1) requirements and the Executive Order 14028 on Improving the Nation's Cybersecurity. Special attention is given to the enhanced supply chain security controls from the latest NIST 800-161 update.
+Dependencies, builds, and artifacts are where many GitHub assessments get thin. This section tracks NIST SP 800-161 Rev. 1 Update 1 and the EO 14028 expectations that show up as SBOMs, signing, provenance, and incident response for the software you ship.
 
 ### Dependency Management (SR-3, SA-9, SR-11)
 
@@ -626,22 +626,24 @@ The following matrix identifies how GitHub features address key requirements fro
 
 ## Documentation Template
 
-For each section evaluated, document:
-1. **Current Configuration**: Findings from the GitHub UI and API checks
-2. **Compliance Status**: Compliant, Partially Compliant, Non-Compliant
-3. **Gaps**: Any identified compliance gaps
-4. **Recommendations**: Specific actions to address gaps
-5. **Evidence**: Screenshots or API outputs demonstrating compliance
+For each section you evaluate, capture:
+
+1. **Current configuration**: What the UI and API showed
+2. **Compliance status**: Compliant, Partially Compliant, or Non-Compliant
+3. **Gaps**: What is missing or weak
+4. **Recommendations**: Concrete fixes, not slogans
+5. **Evidence**: Screenshots or saved API output
 
 ## Final Compliance Report
 
-Compile your findings into a comprehensive compliance report that includes:
+When you roll findings up for leadership or an assessor, include:
+
 1. Executive summary
-2. Scope of evaluation
+2. Scope
 3. Methodology
-4. Detailed findings by section
+4. Findings by section
 5. Gap analysis
-6. Remediation plan
+6. Remediation plan with owners and dates
 7. Appendices with evidence
 
 ## Additional Resources
@@ -660,40 +662,43 @@ Compile your findings into a comprehensive compliance report that includes:
 
 ## Framework-Specific Evaluation Guidelines
 
-### SOC 2 Type II Evaluation Focus
-- **Access Controls**: Verify 90%+ branch protection coverage
-- **Monitoring**: Ensure continuous security monitoring is enabled
-- **Incident Response**: Document and test incident response procedures
-- **Change Management**: Verify all changes go through PR review process
+Use these as pressure tests after the shared walkthrough. Each framework raises the bar differently.
 
-### HIPAA Security Rule Evaluation Focus
-- **100% Requirements**: Branch protection, audit logging, and access controls must be at 100%
-- **Encryption**: Verify data encryption in transit and at rest
-- **Audit Controls**: Ensure comprehensive audit logging with appropriate retention
-- **Access Management**: Verify strict access controls and authentication
+### SOC 2 Type II
+- **Access controls**: Aim for 90%+ branch protection coverage
+- **Monitoring**: Continuous security monitoring actually turned on and reviewed
+- **Incident response**: Documented *and* exercised
+- **Change management**: Production changes go through PR review, not side doors
 
-### ISO 27001:2022 Evaluation Focus
-- **ISMS Documentation**: Verify information security policies exist
-- **Risk Management**: Document risk assessment and treatment
-- **Asset Management**: Ensure repository inventory and ownership (CODEOWNERS)
-- **Continuous Improvement**: Evidence of regular security reviews
+### HIPAA Security Rule
+- **Hard floor**: Branch protection, audit logging, and access controls at 100% where in scope
+- **Encryption**: Transit and at rest, including secrets handling
+- **Audit controls**: Retention and review that match your policy
+- **Access management**: Tight authn/authz, no shared convenience accounts
 
-### PCI-DSS v4.0 Evaluation Focus
-- **Zero Tolerance**: No open vulnerabilities in production code
-- **100% Code Review**: All code must go through PR review
-- **Strong Authentication**: MFA required for all users
-- **Audit Logging**: Comprehensive logging of all access and changes
-- **Secure Development**: GHAS must be enabled for vulnerability scanning
+### ISO 27001:2022
+- **ISMS documentation**: Policies exist and match how the org really works
+- **Risk management**: Assessment and treatment are written down
+- **Asset management**: Repo inventory and ownership (CODEOWNERS)
+- **Continuous improvement**: Regular security review evidence, not a one-time audit
 
-## Automated Evaluation Option
+### PCI-DSS v4.0
+- **Zero open vulns** in in-scope production code paths
+- **100% code review** via PRs
+- **MFA** for all users with access
+- **Audit logging** of access and changes
+- **Secure development**: GHAS (or equivalent) enabled for vulnerability scanning
 
-For automated assessment, use the `github_compliance_audit.sh` script included in this repository. The script supports multiple compliance frameworks:
+## Automated evaluation
 
-Usage:
+For the machine-readable pass, run the companion script:
+
 ```bash
 # All frameworks
 ./github_compliance_audit.sh <organization-name>
 
-# Specific framework
-./github_compliance_audit.sh <organization-name> [fedramp|soc2|hipaa|iso27001|pci-dss]
+# One framework
+./github_compliance_audit.sh <organization-name> [fedramp|nist|soc2|hipaa|iso27001|pci-dss]
 ```
+
+Treat the script output as a draft evidence pack. This guide is where you confirm, challenge, and document what automation cannot assert.
