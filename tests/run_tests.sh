@@ -122,6 +122,19 @@ assert_eq "required reviews read from protection" "2" \
   "$(jq -r '.branch_protection.required_reviews' "$OUT/repositories/payments-api/analysis.json")"
 assert_eq "enforce_admins read from protection" "true" \
   "$(jq -r '.branch_protection.enforce_admins' "$OUT/repositories/payments-api/analysis.json")"
+# web-frontend protects main but leaves release/2.x and hotfix open.
+assert_eq "partially protected branch sets flagged" "1" \
+  "$(s '.counts.partially_protected_branches')"
+assert_eq "organization rulesets counted" "1" \
+  "$(s '.organization_controls.rulesets.total')"
+# The fixture org ruleset is in evaluate mode, so it enforces nothing. Counting
+# it as protection would be the same class of false pass as the ones fixed here.
+assert_eq "evaluate-mode org ruleset is not counted as active" "0" \
+  "$(s '.organization_controls.rulesets.active')"
+assert_eq "inherited org rulesets attributed to repositories" "3" \
+  "$(s '.counts.inherited_org_rulesets')"
+assert_eq "evaluate-mode ruleset does not confer protection" "66" \
+  "$(s '.coverage.branch_protection')"
 
 echo
 echo "== organization controls =="

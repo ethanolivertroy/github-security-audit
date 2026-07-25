@@ -108,6 +108,7 @@ Every point below is attributable to a measured control. Total earned:
 | Owners | 2 |
 | Security managers | 1 |
 | Default repository permission | read |
+| Organization rulesets | 1 (0 active, inherited by 3 repositories) |
 | Installed GitHub Apps | 3 (2 with write access, 2 scoped to all repositories) |
 | Organization webhooks | 2 (1 without a secret, 1 with SSL verification disabled) |
 

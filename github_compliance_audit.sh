@@ -387,12 +387,25 @@ summarize_repository() {
   # Rulesets are the modern replacement for branch protection. A repository
   # governed only by an active ruleset is protected, and counting it as
   # unprotected is the most common false negative in GitHub compliance tooling.
-  local rulesets='{"total":0,"active_branch_rulesets":0}'
+  local rulesets='{"total":0,"active_branch_rulesets":0,"inherited":0}'
   if api_ok "$rulesets_file"; then
     rulesets=$(jq '{
       total: length,
-      active_branch_rulesets: ([.[] | select(.enforcement == "active" and .target == "branch")] | length)
+      active_branch_rulesets: ([.[] | select(.enforcement == "active" and .target == "branch")] | length),
+      inherited: ([.[] | select(.source_type == "Organization")] | length)
     }' "$rulesets_file")
+  fi
+
+  # Protection applied only to the default branch, while long-lived release or
+  # maintenance branches stay open, is a common CM-2 gap that a single default
+  # branch check cannot see.
+  local branches='{"available":false,"total":0,"protected":0}'
+  if api_ok "$repo_dir/branches/all_branches.json"; then
+    branches=$(jq '{
+      available: true,
+      total: length,
+      protected: ([.[] | select(.protected)] | length)
+    }' "$repo_dir/branches/all_branches.json")
   fi
 
   local alerts
@@ -489,6 +502,7 @@ summarize_repository() {
     --argjson info "$(api_ok "$repo_dir/info.json" && cat "$repo_dir/info.json" || echo '{}')" \
     --argjson protection "$protection" \
     --argjson rulesets "$rulesets" \
+    --argjson branches "$branches" \
     --argjson alerts "$alerts" \
     --argjson supply_chain "$supply_chain" \
     --argjson security_analysis "$security_analysis" \
@@ -510,6 +524,7 @@ summarize_repository() {
       web_commit_signoff_required: ($info.web_commit_signoff_required // false),
       branch_protection: $protection,
       rulesets: $rulesets,
+      branches: $branches,
       protected: ($protection.present or ($rulesets.active_branch_rulesets > 0)),
       security_analysis: $security_analysis,
       actions: $actions,
@@ -598,7 +613,11 @@ process_repository() {
       > "$repo_dir/branches/default_protection.json"
   fi
 
-  api_call_with_retry "repos/$org_name/$repo_name/rulesets" "$repo_dir/rulesets.json"
+  # includes_parents pulls in organization-level rulesets that apply here. It
+  # defaults to true, but stating it prevents a repository governed only by an
+  # org ruleset from ever reading as unprotected.
+  api_call_with_retry "repos/$org_name/$repo_name/rulesets?includes_parents=true" \
+    "$repo_dir/rulesets.json"
 
   # Only open alerts count against a control. Asking the API to filter also
   # avoids paging through years of already-remediated findings.
@@ -831,6 +850,9 @@ api_call_paginated "orgs/$ORG_NAME/members?role=admin" "$OUTPUT_DIR/org_security
 api_call_paginated "orgs/$ORG_NAME/security-managers" "$OUTPUT_DIR/org_security/security_managers.json"
 api_call_paginated "orgs/$ORG_NAME/teams" "$OUTPUT_DIR/org_security/teams.json"
 api_call_paginated "orgs/$ORG_NAME/hooks" "$OUTPUT_DIR/org_security/webhooks.json"
+# Organization rulesets enforce change control across every repository at once,
+# which is stronger evidence for CM-3 than the same rules repeated per repo.
+api_call_paginated "orgs/$ORG_NAME/rulesets" "$OUTPUT_DIR/org_security/org_rulesets.json"
 # This endpoint wraps its list in an object, so it is not paginated the same way.
 api_call_with_retry "orgs/$ORG_NAME/installations?per_page=100" "$OUTPUT_DIR/org_security/github_apps.json"
 
@@ -901,6 +923,15 @@ api_ok "$OUTPUT_DIR/org_security/audit_log_sample.json" && audit_log_available=t
 org_security_policy=false
 api_ok "$OUTPUT_DIR/org_security/security_policy.json" && org_security_policy=true
 
+org_rulesets='{"available":false,"total":0,"active":0}'
+if api_ok "$OUTPUT_DIR/org_security/org_rulesets.json"; then
+  org_rulesets=$(jq '{
+    available: true,
+    total: length,
+    active: ([.[] | select(.enforcement == "active")] | length)
+  }' "$OUTPUT_DIR/org_security/org_rulesets.json")
+fi
+
 org_owners=0
 if api_ok "$OUTPUT_DIR/org_security/owners.json"; then
   org_owners=$(jq 'if type == "array" then length else 0 end' "$OUTPUT_DIR/org_security/owners.json")
@@ -955,6 +986,7 @@ jq -s \
   --argjson org_members "$org_members" \
   --argjson org_webhooks "$org_webhooks" \
   --argjson org_apps "$org_apps" \
+  --argjson org_rulesets "$org_rulesets" \
   --argjson include_archived "$([ "$INCLUDE_ARCHIVED" = "true" ] && echo true || echo false)" '
   def pct($n; $d): if $d == 0 then 0 else (($n * 100 / $d) | floor) end;
 
@@ -971,6 +1003,11 @@ jq -s \
           (.branch_protection.required_reviews >= 1) and
           .branch_protection.require_code_owner_reviews)] | length,
       rulesets: [$scored[] | select(.rulesets.active_branch_rulesets > 0)] | length,
+      inherited_org_rulesets: [$scored[] | select(.rulesets.inherited > 0)] | length,
+      # Repositories carrying more than one branch where only some are protected.
+      partially_protected_branches: [$scored[] | select(
+        .branches.available and .branches.total > 1 and
+        .branches.protected > 0 and .branches.protected < .branches.total)] | length,
       code_scanning: [$scored[] | select(.security_analysis.advanced_security == "enabled")] | length,
       secret_scanning: [$scored[] | select(.security_analysis.secret_scanning == "enabled")] | length,
       push_protection: [$scored[] | select(.security_analysis.secret_scanning_push_protection == "enabled")] | length,
@@ -1060,6 +1097,7 @@ jq -s \
         members: $org_members,
         webhooks: $org_webhooks,
         github_apps: $org_apps,
+        rulesets: $org_rulesets,
         default_repository_permission: ($o.default_repository_permission // "unknown"),
         members_can_create_public_repositories: ($o.members_can_create_public_repositories // null),
         web_commit_signoff_required: ($o.web_commit_signoff_required // false),
@@ -1634,6 +1672,7 @@ $(read_summary '.score.points_earned')/100, giving a risk score of $risk_score.
 | Owners | $org_owners |
 | Security managers | $security_managers_count |
 | Default repository permission | $(read_summary '.organization_controls.default_repository_permission') |
+| Organization rulesets | $(read_summary '.organization_controls.rulesets.total') ($(read_summary '.organization_controls.rulesets.active') active, inherited by $(read_summary '.counts.inherited_org_rulesets') repositories) |
 | Installed GitHub Apps | $(read_summary '.organization_controls.github_apps.total') ($apps_with_write with write access, $(read_summary '.organization_controls.github_apps.all_repositories') scoped to all repositories) |
 | Organization webhooks | $(read_summary '.organization_controls.webhooks.total') ($webhooks_without_secret without a secret, $webhooks_insecure_ssl with SSL verification disabled) |
 
@@ -1746,7 +1785,7 @@ generate_fedramp_nist_report() {
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|-----------|
 | CM-2 | Baseline Configuration | $(status_for "$protected_percentage" 80) | Protected branches: $protected_percentage% |
-| CM-3 | Configuration Change Control | $(status_for "$rulesets_percentage" 50) | Repository rulesets: $rulesets_percentage% |
+| CM-3 | Configuration Change Control | $(status_for "$rulesets_percentage" 50) | Rulesets on $rulesets_percentage% of repositories, $(read_summary '.organization_controls.rulesets.active') active organization rulesets |
 | CM-5 | Access Restrictions for Change | $(status_for "$review_percentage" 80) | Review enforcement: $review_percentage%, Actions can approve PRs in $actions_can_approve_prs repositories |
 | CM-7 | Least Functionality | $(status_for "$read_only_token_percentage" 100) | Read-only default workflow token: $read_only_token_percentage%, explicit workflow permissions: $workflow_permissions_percentage% |
 

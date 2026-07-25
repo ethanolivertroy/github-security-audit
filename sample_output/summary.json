@@ -29,6 +29,11 @@
       "with_admin_access": 0,
       "all_repositories": 2
     },
+    "rulesets": {
+      "available": true,
+      "total": 1,
+      "active": 0
+    },
     "default_repository_permission": "read",
     "members_can_create_public_repositories": null,
     "web_commit_signoff_required": false,
@@ -74,6 +79,8 @@
     "protected": 2,
     "strong_review": 1,
     "rulesets": 1,
+    "inherited_org_rulesets": 3,
+    "partially_protected_branches": 1,
     "code_scanning": 1,
     "secret_scanning": 2,
     "push_protection": 1,

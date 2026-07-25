@@ -16,7 +16,9 @@ Point it at an organization. It pulls org- and repo-level security settings thro
 - Org-level security policy presence
 
 **Repositories**
-- Branch protection *and* repository rulesets, including how strong the rule is: required approvals, code owner review, stale review dismissal, admin enforcement, signed commits, linear history
+- Branch protection *and* rulesets, including organization rulesets inherited by the repository, and whether they are `active` rather than sitting in `evaluate` mode enforcing nothing
+- How strong the rule actually is: required approvals, code owner review, stale review dismissal, admin enforcement, signed commits, linear history
+- Repositories where only some long-lived branches are protected
 - Dependabot, code scanning, secret scanning and push protection enablement
 - CODEOWNERS and per-repository security policies
 

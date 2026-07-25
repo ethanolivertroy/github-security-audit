@@ -11,8 +11,14 @@
     "present": false
   },
   "rulesets": {
-    "total": 2,
-    "active_branch_rulesets": 1
+    "total": 3,
+    "active_branch_rulesets": 1,
+    "inherited": 1
+  },
+  "branches": {
+    "available": true,
+    "total": 3,
+    "protected": 1
   },
   "protected": true,
   "security_analysis": {
