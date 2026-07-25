@@ -547,8 +547,6 @@ process_repository() {
   if [ -n "$default_branch" ]; then
     api_call_with_retry "repos/$org_name/$repo_name/branches/$default_branch/protection" \
       "$repo_dir/branches/default_protection.json"
-    cp "$repo_dir/branches/default_protection.json" \
-      "$repo_dir/branches/${default_branch//\//_}_protection.json" 2>/dev/null || true
   else
     api_error_payload 0 "Repository has no default branch (empty repository)" \
       > "$repo_dir/branches/default_protection.json"

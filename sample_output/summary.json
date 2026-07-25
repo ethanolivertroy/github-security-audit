@@ -1,0 +1,97 @@
+{
+  "organization": "acme-corp",
+  "framework": "all",
+  "generated_at": "2026-07-25T12:00:00Z",
+  "tool_version": "2.0.0",
+  "repositories": {
+    "total": 5,
+    "scored": 3,
+    "archived": 1,
+    "empty": 1,
+    "private": 5
+  },
+  "organization_controls": {
+    "two_factor_required": true,
+    "security_managers": 1,
+    "default_repository_permission": "read",
+    "members_can_create_public_repositories": null,
+    "web_commit_signoff_required": false,
+    "advanced_security_default_for_new_repos": null,
+    "secret_scanning_default_for_new_repos": true,
+    "push_protection_default_for_new_repos": true,
+    "audit_log_accessible": false,
+    "security_policy_published": false
+  },
+  "coverage": {
+    "branch_protection": 66,
+    "rulesets": 33,
+    "review_with_code_owners": 33,
+    "code_scanning": 33,
+    "secret_scanning": 66,
+    "push_protection": 33,
+    "dependabot_alerts": 33,
+    "dependabot_security_updates": 66,
+    "codeowners": 66,
+    "security_policy": 33,
+    "sbom": 33,
+    "signing": 33,
+    "attestation": 33,
+    "actions_pinned_to_sha": 66
+  },
+  "counts": {
+    "protected": 2,
+    "strong_review": 1,
+    "rulesets": 1,
+    "code_scanning": 1,
+    "secret_scanning": 2,
+    "push_protection": 1,
+    "dependabot_updates": 2,
+    "dependabot_alerts": 1,
+    "codeowners": 2,
+    "security_policy": 1,
+    "sbom": 1,
+    "signing": 1,
+    "attestation": 1,
+    "actions_total": 6,
+    "actions_pinned": 4
+  },
+  "alerts": {
+    "dependabot": {
+      "open": 4,
+      "critical": 1,
+      "high": 1,
+      "past_due": 2,
+      "repos_without_visibility": 0
+    },
+    "code_scanning": {
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "past_due": 0,
+      "repos_without_visibility": 1
+    },
+    "secret_scanning": {
+      "open": 1,
+      "past_due": 0,
+      "repos_without_visibility": 1
+    },
+    "repositories_without_visibility": 1
+  },
+  "score": {
+    "risk_score": 49,
+    "points_earned": 51,
+    "compliance_level": "Medium",
+    "breakdown": {
+      "two_factor": 15,
+      "branch_protection": 13,
+      "review_quality": 3,
+      "secret_protection": 4,
+      "code_scanning": 3,
+      "dependency_monitoring": 1,
+      "remediation_timeliness": 5,
+      "ownership": 3,
+      "action_pinning": 3,
+      "provenance": 1
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "name": "web-frontend",
+  "archived": false,
+  "fork": false,
+  "private": true,
+  "empty": false,
+  "default_branch": "main",
+  "pushed_at": "2026-07-22T14:05:00Z",
+  "web_commit_signoff_required": false,
+  "branch_protection": {
+    "present": false
+  },
+  "rulesets": {
+    "total": 2,
+    "active_branch_rulesets": 1
+  },
+  "protected": true,
+  "security_analysis": {
+    "advanced_security": "disabled",
+    "secret_scanning": "enabled",
+    "secret_scanning_push_protection": "disabled",
+    "dependabot_security_updates": "enabled"
+  },
+  "dependabot_alerts_enabled": false,
+  "codeowners": true,
+  "security_policy": false,
+  "alerts": {
+    "dependabot": {
+      "available": true,
+      "http_status": "200",
+      "open": 1,
+      "critical": 0,
+      "high": 0,
+      "medium": 1,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": 1
+    },
+    "code_scanning": {
+      "available": true,
+      "http_status": "200",
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": null
+    },
+    "secret_scanning": {
+      "available": true,
+      "http_status": "200",
+      "open": 1,
+      "critical": 0,
+      "high": 1,
+      "medium": 0,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": 2
+    }
+  },
+  "supply_chain": {
+    "workflows": 0,
+    "actions_total": 0,
+    "actions_pinned_to_sha": 0,
+    "workflows_with_permissions": 0,
+    "sbom": false,
+    "signing": false,
+    "attestation": false,
+    "signed_release_assets": false,
+    "sbom_release_assets": false
+  }
+}

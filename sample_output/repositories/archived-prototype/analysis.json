@@ -1,0 +1,73 @@
+{
+  "name": "archived-prototype",
+  "archived": true,
+  "fork": false,
+  "private": true,
+  "empty": false,
+  "default_branch": "main",
+  "pushed_at": "2021-03-02T11:00:00Z",
+  "web_commit_signoff_required": false,
+  "branch_protection": {
+    "present": false
+  },
+  "rulesets": {
+    "total": 0,
+    "active_branch_rulesets": 0
+  },
+  "protected": false,
+  "security_analysis": {
+    "advanced_security": "disabled",
+    "secret_scanning": "disabled",
+    "secret_scanning_push_protection": "disabled",
+    "dependabot_security_updates": "disabled"
+  },
+  "dependabot_alerts_enabled": false,
+  "codeowners": false,
+  "security_policy": false,
+  "alerts": {
+    "dependabot": {
+      "available": false,
+      "http_status": "404",
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": null
+    },
+    "code_scanning": {
+      "available": false,
+      "http_status": "404",
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": null
+    },
+    "secret_scanning": {
+      "available": false,
+      "http_status": "404",
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": null
+    }
+  },
+  "supply_chain": {
+    "workflows": 0,
+    "actions_total": 0,
+    "actions_pinned_to_sha": 0,
+    "workflows_with_permissions": 0,
+    "sbom": false,
+    "signing": false,
+    "attestation": false,
+    "signed_release_assets": false,
+    "sbom_release_assets": false
+  }
+}
