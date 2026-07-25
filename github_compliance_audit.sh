@@ -38,6 +38,9 @@ Environment variables:
   MAX_PARALLEL_JOBS   Concurrent repository scans (default: 10)
   INCLUDE_ARCHIVED    Score archived repositories too (default: false)
   OUTPUT_DIR          Where to write evidence (default: timestamped directory)
+  AUDIT_RUNNER        Force "parallel" or "xargs" for concurrency
+
+Exit codes: 0 success, 1 usage or access error, 2 Low compliance level.
 
 Example: GITHUB_TOKEN=ghp_xxxx $0 my-org soc2
 USAGE
@@ -92,12 +95,15 @@ done
 
 # GNU parallel is preferred, but xargs -P is a fine substitute and is always
 # present, so a missing parallel installation is not a hard failure.
-if command -v parallel &> /dev/null; then
-  RUNNER="parallel"
-else
-  RUNNER="xargs"
-  echo "Note: GNU parallel not found, using 'xargs -P' instead."
-  echo "      For nicer output install it: brew install parallel / apt install parallel"
+RUNNER="${AUDIT_RUNNER:-}"
+if [ -z "$RUNNER" ]; then
+  if command -v parallel &> /dev/null; then
+    RUNNER="parallel"
+  else
+    RUNNER="xargs"
+    echo "Note: GNU parallel not found, using 'xargs -P' instead."
+    echo "      For nicer output install it: brew install parallel / apt install parallel"
+  fi
 fi
 
 # Setup authentication

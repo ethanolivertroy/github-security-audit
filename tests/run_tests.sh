@@ -54,6 +54,7 @@ run_audit() {
   shift 3
 
   env PATH="$SCRIPT_DIR/mock_api:$PATH" \
+    AUDIT_RUNNER="${AUDIT_RUNNER:-}" \
     MOCK_API_DIR="$SCRIPT_DIR/fixtures/$org" \
     GITHUB_TOKEN="mock-token" \
     GITHUB_API_URL="https://api.github.com" \
@@ -208,6 +209,25 @@ for framework in fedramp soc2 hipaa iso27001 pci-dss; do
     fi
   else
     fail "$framework report renders" "a non-empty report" "none produced"
+  fi
+done
+
+echo
+echo "== concurrency backends =="
+# Both backends must produce byte-identical findings; only the scheduler differs.
+for backend in parallel xargs; do
+  if [ "$backend" = "parallel" ] && ! command -v parallel > /dev/null 2>&1; then
+    printf '  skip GNU parallel not installed\n'
+    continue
+  fi
+  out="$WORK_DIR/audit-$backend"
+  AUDIT_RUNNER="$backend" run_audit acme-corp all "$out" > "$WORK_DIR/$backend.log" 2>&1
+  if [ -f "$out/summary.json" ]; then
+    assert_eq "$backend backend produces the same coverage" \
+      "$(jq -Sc '.coverage' "$OUT/summary.json")" \
+      "$(jq -Sc '.coverage' "$out/summary.json")"
+  else
+    fail "$backend backend completes" "summary.json" "audit aborted"
   fi
 done
 
