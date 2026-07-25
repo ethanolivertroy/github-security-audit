@@ -1,0 +1,34 @@
+{
+  "total_count": 3,
+  "installations": [
+    {
+      "id": 101,
+      "app_slug": "dependabot",
+      "repository_selection": "all",
+      "permissions": {
+        "metadata": "read",
+        "pull_requests": "write",
+        "contents": "write"
+      }
+    },
+    {
+      "id": 102,
+      "app_slug": "read-only-dashboard",
+      "repository_selection": "selected",
+      "permissions": {
+        "metadata": "read",
+        "contents": "read"
+      }
+    },
+    {
+      "id": 103,
+      "app_slug": "deploy-bot",
+      "repository_selection": "all",
+      "permissions": {
+        "metadata": "read",
+        "contents": "write",
+        "administration": "write"
+      }
+    }
+  ]
+}

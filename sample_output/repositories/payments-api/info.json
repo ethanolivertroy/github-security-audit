@@ -1,0 +1,18 @@
+{
+  "name": "payments-api",
+  "full_name": "acme-corp/payments-api",
+  "private": true,
+  "archived": false,
+  "fork": false,
+  "size": 4096,
+  "default_branch": "main",
+  "pushed_at": "2026-07-20T10:00:00Z",
+  "web_commit_signoff_required": true,
+  "security_and_analysis": {
+    "advanced_security": { "status": "enabled" },
+    "secret_scanning": { "status": "enabled" },
+    "secret_scanning_push_protection": { "status": "enabled" },
+    "secret_scanning_delegated_bypass": { "status": "enabled" },
+    "dependabot_security_updates": { "status": "enabled" }
+  }
+}

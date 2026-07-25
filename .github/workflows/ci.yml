@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default. This repository audits other organizations for
+# exactly this setting, so it sets it explicitly rather than inheriting.
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned to a full commit SHA (actions/checkout v5.0.0),
+      # which is the control this tool reports on under NIST SR-5 and CM-7.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint shell sources
+        run: |
+          shellcheck github_compliance_audit.sh \
+                     tests/run_tests.sh \
+                     tests/mock_api/curl
+
+  test:
+    name: Tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS exercises BSD base64 and sed, where the GNU flags differ.
+          - os: ubuntu-latest
+            runner: linux
+          - os: macos-latest
+            runner: macos
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Install GNU parallel
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y parallel
+
+      - name: Run the test suite
+        run: bash tests/run_tests.sh

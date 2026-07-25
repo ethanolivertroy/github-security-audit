@@ -1,0 +1,96 @@
+{
+  "name": "legacy-billing",
+  "archived": false,
+  "fork": false,
+  "private": true,
+  "empty": false,
+  "default_branch": "master",
+  "pushed_at": "2025-02-11T08:30:00Z",
+  "web_commit_signoff_required": false,
+  "branch_protection": {
+    "present": false
+  },
+  "rulesets": {
+    "total": 1,
+    "active_branch_rulesets": 0,
+    "inherited": 1
+  },
+  "branches": {
+    "available": true,
+    "total": 1,
+    "protected": 0
+  },
+  "protected": false,
+  "security_analysis": {
+    "available": true,
+    "advanced_security": "disabled",
+    "code_security": "unknown",
+    "code_security_enabled": false,
+    "secret_scanning": "disabled",
+    "secret_scanning_push_protection": "disabled",
+    "secret_scanning_delegated_bypass": "unknown",
+    "dependabot_security_updates": "disabled"
+  },
+  "actions": {
+    "available": true,
+    "enabled": true,
+    "allowed_actions": "all",
+    "default_workflow_permissions": "write",
+    "can_approve_pull_request_reviews": true
+  },
+  "push_protection_bypasses": {
+    "available": false,
+    "total": 0,
+    "approved": 0,
+    "pending": 0
+  },
+  "dependabot_alerts_enabled": false,
+  "codeowners": false,
+  "security_policy": false,
+  "alerts": {
+    "dependabot": {
+      "available": true,
+      "http_status": "200",
+      "open": 3,
+      "critical": 1,
+      "high": 1,
+      "medium": 1,
+      "low": 0,
+      "past_due": 2,
+      "oldest_open_days": 932
+    },
+    "code_scanning": {
+      "available": false,
+      "http_status": "403",
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": null
+    },
+    "secret_scanning": {
+      "available": false,
+      "http_status": "403",
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0,
+      "past_due": 0,
+      "oldest_open_days": null
+    }
+  },
+  "supply_chain": {
+    "workflows": 1,
+    "actions_total": 2,
+    "actions_pinned_to_sha": 0,
+    "workflows_with_permissions": 0,
+    "sbom": false,
+    "signing": false,
+    "attestation": false,
+    "signed_release_assets": false,
+    "sbom_release_assets": false
+  }
+}

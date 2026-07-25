@@ -1,0 +1,5 @@
+[
+  { "name": "main", "protected": true },
+  { "name": "release/2.x", "protected": false },
+  { "name": "hotfix", "protected": false }
+]

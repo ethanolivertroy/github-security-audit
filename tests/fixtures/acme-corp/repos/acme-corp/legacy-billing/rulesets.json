@@ -1,0 +1,9 @@
+[
+  {
+    "id": 900,
+    "name": "org-require-reviews",
+    "target": "branch",
+    "enforcement": "evaluate",
+    "source_type": "Organization"
+  }
+]

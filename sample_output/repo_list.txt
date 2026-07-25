@@ -1,3 +1,5 @@
-api-service,main
-web-frontend,main
-docs,main
+payments-api
+legacy-billing
+web-frontend
+archived-prototype
+empty-scratch

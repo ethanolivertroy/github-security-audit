@@ -1,0 +1,7 @@
+# Default owner for everything in this repository.
+* @ethanolivertroy
+
+# Control logic and scoring: changes here alter what auditors are told, so they
+# warrant a closer read than documentation changes.
+/github_compliance_audit.sh @ethanolivertroy
+/tests/ @ethanolivertroy

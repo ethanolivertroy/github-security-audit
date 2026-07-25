@@ -2,28 +2,60 @@
 # GitHub Organization Multi-Framework Compliance Audit
 # Supports FedRAMP, NIST, SOC2, HIPAA, ISO 27001, PCI-DSS
 # Features parallel processing, robust error handling, and comprehensive security checks
+#
+# Repository collection runs inside GNU parallel (or xargs), which invokes the
+# exported functions from a fresh shell. ShellCheck cannot see those call sites.
+# shellcheck disable=SC2317
 
 set -euo pipefail
 
+AUDIT_TOOL_VERSION="2.0.0"
+
 # Configuration
-ORG_NAME="$1"
+ORG_NAME="${1:-}"
 FRAMEWORK="${2:-all}"  # Default to all frameworks
-MAX_PARALLEL_JOBS=10  # Number of parallel repository scans
-RETRY_ATTEMPTS=3
-RETRY_DELAY=5
+MAX_PARALLEL_JOBS="${MAX_PARALLEL_JOBS:-10}"  # Number of parallel repository scans
+RETRY_ATTEMPTS="${RETRY_ATTEMPTS:-3}"
+RETRY_DELAY="${RETRY_DELAY:-5}"
+GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
+# Archived repositories are read-only and cannot receive branch protection, so
+# including them understates coverage. Set to "true" to score them anyway.
+INCLUDE_ARCHIVED="${INCLUDE_ARCHIVED:-false}"
 
 # Supported frameworks
 SUPPORTED_FRAMEWORKS=("fedramp" "nist" "soc2" "hipaa" "iso27001" "pci-dss" "all")
 
+usage() {
+  cat <<USAGE
+Usage: $0 <organization-name> [framework]
+  - organization-name: Your GitHub organization name (required)
+  - framework: Compliance framework (optional, default: all)
+    Supported: ${SUPPORTED_FRAMEWORKS[*]}
+
+Environment variables:
+  GITHUB_TOKEN        Token to authenticate with (falls back to 'gh auth token')
+  GITHUB_API_URL      API base URL (default: https://api.github.com)
+  MAX_PARALLEL_JOBS   Concurrent repository scans (default: 10)
+  INCLUDE_ARCHIVED    Score archived repositories too (default: false)
+  OUTPUT_DIR          Where to write evidence (default: timestamped directory)
+  AUDIT_RUNNER        Force "parallel" or "xargs" for concurrency
+
+Exit codes: 0 success, 1 usage or access error, 2 Low compliance level.
+
+Example: GITHUB_TOKEN=ghp_xxxx $0 my-org soc2
+USAGE
+}
+
+case "$ORG_NAME" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
 # Display usage if organization name is missing
 if [ -z "$ORG_NAME" ]; then
-  echo "Usage: $0 <organization-name> [framework]"
-  echo "  - organization-name: Your GitHub organization name (required)"
-  echo "  - framework: Compliance framework (optional, default: all)"
-  echo "    Supported: fedramp, nist, soc2, hipaa, iso27001, pci-dss, all"
-  echo ""
-  echo "Set GITHUB_TOKEN environment variable or authenticate with gh CLI"
-  echo "Example: GITHUB_TOKEN=ghp_xxxx $0 my-org soc2"
+  usage >&2
   exit 1
 fi
 
@@ -42,96 +74,174 @@ if [ "$framework_valid" != "true" ]; then
 fi
 
 # Create output directory
-OUTPUT_DIR="github_compliance_audit_${FRAMEWORK}_$(date +%Y%m%d_%H%M%S)"
+AUDIT_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+OUTPUT_DIR="${OUTPUT_DIR:-github_compliance_audit_${FRAMEWORK}_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$OUTPUT_DIR"
 echo "Starting $FRAMEWORK compliance audit for organization: $ORG_NAME"
 echo "Results will be saved to: $OUTPUT_DIR"
 
-# Initialize progress tracking
-echo "0" > "$OUTPUT_DIR/.progress"
+# Progress is tracked by appending one line per finished repository. Appends of
+# short lines are atomic, so parallel workers cannot corrupt the count.
+: > "$OUTPUT_DIR/.progress"
 echo "0" > "$OUTPUT_DIR/.total"
 
 # Check for required tools
-for tool in jq curl parallel; do
+for tool in jq curl; do
   if ! command -v "$tool" &> /dev/null; then
-    echo "Error: $tool is required but not installed."
-    if [ "$tool" = "parallel" ]; then
-      echo "Install with: brew install parallel (macOS) or apt install parallel (Ubuntu)"
-    fi
+    echo "Error: $tool is required but not installed." >&2
     exit 1
   fi
 done
 
+# GNU parallel is preferred, but xargs -P is a fine substitute and is always
+# present, so a missing parallel installation is not a hard failure.
+RUNNER="${AUDIT_RUNNER:-}"
+if [ -z "$RUNNER" ]; then
+  if command -v parallel &> /dev/null; then
+    RUNNER="parallel"
+  else
+    RUNNER="xargs"
+    echo "Note: GNU parallel not found, using 'xargs -P' instead."
+    echo "      For nicer output install it: brew install parallel / apt install parallel"
+  fi
+fi
+
 # Setup authentication
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   echo "Using GitHub token from environment variable"
-  AUTH_HEADER="Authorization: Bearer $GITHUB_TOKEN"
   AUTH_METHOD="token"
 else
   # Check for GitHub CLI authentication
   if ! command -v gh &> /dev/null; then
-    echo "Error: Either set GITHUB_TOKEN environment variable or install GitHub CLI"
+    echo "Error: Either set GITHUB_TOKEN environment variable or install GitHub CLI" >&2
     exit 1
   fi
-  
+
   if ! gh auth status &> /dev/null; then
-    echo "Error: Please authenticate with GitHub CLI first using: gh auth login"
+    echo "Error: Please authenticate with GitHub CLI first using: gh auth login" >&2
     exit 1
   fi
-  
+
   echo "Using GitHub CLI authentication"
   AUTH_METHOD="cli"
   # Export token for parallel jobs
-  export GITHUB_TOKEN=$(gh auth token)
-  AUTH_HEADER="Authorization: Bearer $GITHUB_TOKEN"
+  GITHUB_TOKEN="$(gh auth token)"
+  export GITHUB_TOKEN
 fi
 
+# The token is deliberately kept in the environment rather than passed as an
+# argument: process arguments are world-readable via ps(1).
+export AUTH_METHOD
+export GITHUB_API_URL
+export RETRY_ATTEMPTS
+export RETRY_DELAY
+
 # Utility Functions
+
+# Failed calls are recorded as a JSON object carrying the HTTP status rather
+# than a bare {"error": ...}. Auditors need to tell "the control is absent"
+# (404) apart from "we were not permitted to look" (403), and a repository
+# whose description happens to contain the word error must not be mistaken
+# for a failed call.
+api_error_payload() {
+  local http_code="$1"
+  local reason="$2"
+  jq -n --arg reason "$reason" --argjson code "$http_code" \
+    '{_audit_error: $reason, _http_code: $code}'
+}
+
+# True when the file holds a real API response rather than an error marker.
+api_ok() {
+  local file="$1"
+  [ -s "$file" ] || return 1
+  jq -e 'if type == "object" then (has("_audit_error") | not) else true end' \
+    "$file" > /dev/null 2>&1
+}
+
+# HTTP status recorded for a failed call ("200" when the call succeeded).
+api_status() {
+  local file="$1"
+  if api_ok "$file"; then
+    echo "200"
+  else
+    jq -r '._http_code // "unknown"' "$file" 2>/dev/null || echo "unknown"
+  fi
+}
 
 # Enhanced API call with retry logic
 api_call_with_retry() {
   local endpoint="$1"
   local output_file="$2"
   local attempt=1
-  local response
-  local http_code
-  
-  while [ $attempt -le $RETRY_ATTEMPTS ]; do
-    if [ "$AUTH_METHOD" = "cli" ] && [ $attempt -eq 1 ]; then
-      # Try gh CLI first for better error messages
-      if gh api "$endpoint" > "$output_file" 2>/dev/null; then
+  local response http_code content header_file wait_seconds reset_at
+
+  # One header scratch file per process; parallel workers each have their own PID.
+  header_file="${TMPDIR:-/tmp}/gh_compliance_audit_headers_$$"
+
+  while [ "$attempt" -le "$RETRY_ATTEMPTS" ]; do
+    response=$(curl -sS -D "$header_file" -w $'\n%{http_code}' \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${GITHUB_API_URL}/${endpoint}" 2>/dev/null) || response=$'\n000'
+
+    http_code="${response##*$'\n'}"
+    content="${response%$'\n'*}"
+
+    case "$http_code" in
+      # 204 means "yes, and there is nothing to return"; several enablement
+      # endpoints answer that way, and treating it as a failure reports the
+      # feature as disabled.
+      204)
+        echo '{}' > "$output_file"
         return 0
-      fi
-    fi
-    
-    # Use curl with retry
-    response=$(curl -s -w "\n%{http_code}" -H "$AUTH_HEADER" \
-      -H "Accept: application/vnd.github.v3+json" \
-      "https://api.github.com/$endpoint")
-    
-    http_code=$(echo "$response" | tail -n1)
-    content=$(echo "$response" | sed '$d')
-    
-    if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
-      echo "$content" > "$output_file"
-      return 0
-    elif [ "$http_code" = "404" ]; then
-      echo "{\"error\": \"Not found\"}" > "$output_file"
-      return 0
-    elif [ "$http_code" = "403" ] && echo "$content" | grep -q "rate limit"; then
-      echo "Rate limit hit, waiting 60 seconds..."
-      sleep 60
-    else
-      echo "API call failed (attempt $attempt/$RETRY_ATTEMPTS): HTTP $http_code"
-      if [ $attempt -lt $RETRY_ATTEMPTS ]; then
-        sleep $RETRY_DELAY
-      fi
-    fi
-    
-    ((attempt++))
+        ;;
+      2*)
+        printf '%s\n' "$content" > "$output_file"
+        return 0
+        ;;
+      404)
+        api_error_payload 404 "Not found" > "$output_file"
+        return 0
+        ;;
+      403|429)
+        # Distinguish rate limiting from a genuine permission problem: retrying
+        # a 403 caused by missing scopes just burns quota.
+        if grep -qi '^x-ratelimit-remaining: 0' "$header_file" ||
+           printf '%s' "$content" | grep -qi 'rate limit'; then
+          wait_seconds=$(sed -n 's/^[Rr]etry-[Aa]fter: *\([0-9]*\).*/\1/p' "$header_file" | head -n1)
+          if [ -z "$wait_seconds" ]; then
+            reset_at=$(sed -n 's/^[Xx]-[Rr]ate[Ll]imit-[Rr]eset: *\([0-9]*\).*/\1/p' "$header_file" | head -n1)
+            if [ -n "$reset_at" ]; then
+              wait_seconds=$(( reset_at - $(date +%s) + 1 ))
+            fi
+          fi
+          if [ -z "$wait_seconds" ] || [ "$wait_seconds" -lt 1 ]; then
+            wait_seconds=60
+          fi
+          if [ "$wait_seconds" -gt 900 ]; then
+            wait_seconds=900
+          fi
+          echo "Rate limit hit on $endpoint, waiting ${wait_seconds}s..." >&2
+          sleep "$wait_seconds"
+        else
+          api_error_payload "$http_code" "Forbidden (check token scopes and org permissions)" \
+            > "$output_file"
+          return 0
+        fi
+        ;;
+      *)
+        echo "API call failed (attempt $attempt/$RETRY_ATTEMPTS): HTTP $http_code $endpoint" >&2
+        if [ "$attempt" -lt "$RETRY_ATTEMPTS" ]; then
+          sleep "$RETRY_DELAY"
+        fi
+        ;;
+    esac
+
+    attempt=$(( attempt + 1 ))
   done
-  
-  echo "{\"error\": \"Failed after $RETRY_ATTEMPTS attempts\"}" > "$output_file"
+
+  api_error_payload "${http_code:-000}" "Failed after $RETRY_ATTEMPTS attempts" > "$output_file"
   return 1
 }
 
@@ -142,54 +252,349 @@ api_call_paginated() {
   local all_data="[]"
   local page=1
   local per_page=100
-  
+  local separator="?"
+  local page_file page_count
+
+  case "$endpoint" in
+    *\?*) separator="&" ;;
+  esac
+
   while true; do
-    local page_file="${output_file}.page${page}"
-    
-    if api_call_with_retry "${endpoint}?per_page=${per_page}&page=${page}" "$page_file"; then
-      local page_data=$(cat "$page_file")
-      
-      # Check if we got data
-      if [ "$page_data" = "[]" ] || [ "$page_data" = "{\"error\": \"Not found\"}" ]; then
-        rm -f "$page_file"
-        break
-      fi
-      
-      # Merge data
-      if [ "$all_data" = "[]" ]; then
-        all_data="$page_data"
-      else
-        all_data=$(echo "$all_data" | jq --argjson new "$page_data" '. + $new')
-      fi
-      
+    page_file="${output_file}.page${page}"
+
+    if ! api_call_with_retry "${endpoint}${separator}per_page=${per_page}&page=${page}" "$page_file"; then
       rm -f "$page_file"
-      
-      # Check if we got a full page (might be more)
-      local count=$(echo "$page_data" | jq '. | length')
-      if [ "$count" -lt "$per_page" ]; then
-        break
-      fi
-      
-      ((page++))
-    else
       break
     fi
+
+    # A non-array response means the endpoint is unavailable to us (404/403) or
+    # returns an object; either way there is nothing to paginate.
+    if ! page_count=$(jq -e 'if type == "array" then length else empty end' "$page_file" 2>/dev/null); then
+      if [ "$all_data" = "[]" ] && ! api_ok "$page_file"; then
+        cp "$page_file" "$output_file"
+        rm -f "$page_file"
+        return 0
+      fi
+      rm -f "$page_file"
+      break
+    fi
+
+    if [ "$page_count" -gt 0 ]; then
+      all_data=$(jq -n --slurpfile new "$page_file" --argjson acc "$all_data" '$acc + $new[0]')
+    fi
+    rm -f "$page_file"
+
+    if [ "$page_count" -lt "$per_page" ]; then
+      break
+    fi
+
+    page=$(( page + 1 ))
   done
-  
-  echo "$all_data" > "$output_file"
+
+  printf '%s\n' "$all_data" > "$output_file"
 }
 
 # Progress tracking
 update_progress() {
-  local current=$(cat "$OUTPUT_DIR/.progress")
-  local total=$(cat "$OUTPUT_DIR/.total")
-  ((current++))
-  echo "$current" > "$OUTPUT_DIR/.progress"
-  
+  local total current percentage
+  echo "." >> "$OUTPUT_DIR/.progress"
+  total=$(cat "$OUTPUT_DIR/.total")
+  current=$(wc -l < "$OUTPUT_DIR/.progress" | tr -d ' ')
+
   if [ "$total" -gt 0 ]; then
-    local percentage=$((current * 100 / total))
-    echo -ne "\rProgress: $current/$total ($percentage%)"
+    percentage=$(( current * 100 / total ))
+    printf '\rProgress: %s/%s (%s%%)' "$current" "$total" "$percentage"
   fi
+}
+
+# GNU coreutils uses --decode, BSD/macOS uses -D. Probe once, not per call, so
+# the flag choice cannot consume the stdin we are trying to decode.
+if printf 'dGVzdA==' | base64 --decode > /dev/null 2>&1; then
+  B64_DECODE_FLAG="--decode"
+else
+  B64_DECODE_FLAG="-D"
+fi
+export B64_DECODE_FLAG
+
+b64_decode() {
+  base64 "$B64_DECODE_FLAG" 2>/dev/null || true
+}
+
+# Summarise the security posture of one workflow file. Reads YAML on stdin.
+# GitHub's own hardening guidance (and NIST SR-11 / SLSA) asks for actions
+# pinned to a full commit SHA and for explicit least-privilege permissions.
+analyze_workflow_yaml() {
+  awk '
+    BEGIN { total = 0; pinned = 0; permissions = 0; sbom = 0; signing = 0; attestation = 0 }
+    # Strip comments so a commented-out "uses:" is not counted.
+    { line = $0; sub(/#.*/, "", line) }
+    line ~ /(^|[[:space:]-])uses:[[:space:]]*[^[:space:]]/ {
+      ref = line
+      sub(/.*uses:[[:space:]]*/, "", ref)
+      gsub(/["'"'"']/, "", ref)
+      # Local (./path) and container (docker://) references are not pinnable
+      # in the same way, so they are excluded from the denominator.
+      if (ref !~ /^\.\// && ref !~ /^docker:\/\//) {
+        total++
+        if (ref ~ /@[0-9a-fA-F]{40}$/) { pinned++ }
+      }
+    }
+    line ~ /^[[:space:]]*permissions:/ { permissions = 1 }
+    tolower(line) ~ /(sbom|cyclonedx|spdx|syft|anchore\/sbom-action)/ { sbom = 1 }
+    tolower(line) ~ /(cosign|sigstore|sign-blob|gpg --detach-sign)/ { signing = 1 }
+    tolower(line) ~ /(attest-build-provenance|attest-sbom|slsa-framework|provenance)/ { attestation = 1 }
+    END {
+      printf "{\"actions_total\":%d,\"actions_pinned_to_sha\":%d,\"explicit_permissions\":%s,\"sbom\":%s,\"signing\":%s,\"attestation\":%s}\n",
+        total, pinned,
+        (permissions ? "true" : "false"),
+        (sbom ? "true" : "false"),
+        (signing ? "true" : "false"),
+        (attestation ? "true" : "false")
+    }
+  '
+}
+
+# Reduce the raw evidence for one repository to the facts the frameworks care
+# about. Keeping scoring out of the collection path means the report can be
+# regenerated from evidence without re-hitting the API.
+summarize_repository() {
+  local repo_dir="$1"
+  local repo_name="$2"
+  local now_epoch="$3"
+
+  local protection_file rulesets_file
+  protection_file="$repo_dir/branches/default_protection.json"
+  rulesets_file="$repo_dir/rulesets.json"
+
+  local protection='{"present":false}'
+  if api_ok "$protection_file"; then
+    protection=$(jq '{
+      present: true,
+      required_reviews: (.required_pull_request_reviews.required_approving_review_count // 0),
+      dismiss_stale_reviews: (.required_pull_request_reviews.dismiss_stale_reviews // false),
+      require_code_owner_reviews: (.required_pull_request_reviews.require_code_owner_reviews // false),
+      required_status_checks: (.required_status_checks != null),
+      strict_status_checks: (.required_status_checks.strict // false),
+      enforce_admins: (.enforce_admins.enabled // false),
+      required_signatures: (.required_signatures.enabled // false),
+      linear_history: (.required_linear_history.enabled // false),
+      allow_force_pushes: (.allow_force_pushes.enabled // false),
+      allow_deletions: (.allow_deletions.enabled // false),
+      required_conversation_resolution: (.required_conversation_resolution.enabled // false)
+    }' "$protection_file")
+  fi
+
+  # Rulesets are the modern replacement for branch protection. A repository
+  # governed only by an active ruleset is protected, and counting it as
+  # unprotected is the most common false negative in GitHub compliance tooling.
+  local rulesets='{"total":0,"active_branch_rulesets":0,"inherited":0}'
+  if api_ok "$rulesets_file"; then
+    rulesets=$(jq '{
+      total: length,
+      active_branch_rulesets: ([.[] | select(.enforcement == "active" and .target == "branch")] | length),
+      inherited: ([.[] | select(.source_type == "Organization")] | length)
+    }' "$rulesets_file")
+  fi
+
+  # Protection applied only to the default branch, while long-lived release or
+  # maintenance branches stay open, is a common CM-2 gap that a single default
+  # branch check cannot see.
+  local branches='{"available":false,"total":0,"protected":0}'
+  if api_ok "$repo_dir/branches/all_branches.json"; then
+    branches=$(jq '{
+      available: true,
+      total: length,
+      protected: ([.[] | select(.protected)] | length)
+    }' "$repo_dir/branches/all_branches.json")
+  fi
+
+  local alerts
+  alerts=$(jq -n \
+    --argjson dependabot "$(summarize_alerts "$repo_dir/dependabot_alerts.json" dependabot "$now_epoch")" \
+    --argjson code_scanning "$(summarize_alerts "$repo_dir/code_scanning_alerts.json" code_scanning "$now_epoch")" \
+    --argjson secret_scanning "$(summarize_alerts "$repo_dir/secret_scanning_alerts.json" secret_scanning "$now_epoch")" \
+    '{dependabot: $dependabot, code_scanning: $code_scanning, secret_scanning: $secret_scanning}')
+
+  local supply_chain='{"workflows":0,"actions_total":0,"actions_pinned_to_sha":0,"workflows_with_permissions":0,"sbom":false,"signing":false,"attestation":false}'
+  if [ -f "$repo_dir/supply_chain/workflow_findings.json" ]; then
+    supply_chain=$(jq -s '{
+      workflows: length,
+      actions_total: (map(.actions_total) | add // 0),
+      actions_pinned_to_sha: (map(.actions_pinned_to_sha) | add // 0),
+      workflows_with_permissions: ([.[] | select(.explicit_permissions)] | length),
+      sbom: (any(.[]; .sbom)),
+      signing: (any(.[]; .signing)),
+      attestation: (any(.[]; .attestation))
+    }' "$repo_dir/supply_chain/workflow_findings.json")
+  fi
+
+  # Release assets are the other place provenance shows up: .sig/.intoto.jsonl
+  # files next to a binary are evidence of signing even without a named workflow.
+  local signed_release=false
+  if api_ok "$repo_dir/supply_chain/release_assets.json"; then
+    if jq -e 'any(.[]?.name; test("\\.(sig|asc|pem|sigstore|intoto\\.jsonl)$"))' \
+      "$repo_dir/supply_chain/release_assets.json" > /dev/null 2>&1; then
+      signed_release=true
+    fi
+  fi
+  local sbom_release=false
+  if api_ok "$repo_dir/supply_chain/release_assets.json"; then
+    if jq -e 'any(.[]?.name; test("(sbom|spdx|cyclonedx)"; "i"))' \
+      "$repo_dir/supply_chain/release_assets.json" > /dev/null 2>&1; then
+      sbom_release=true
+    fi
+  fi
+
+  # security_and_analysis is only returned to callers with admin permission on
+  # the repository. Absent fields mean "we were not allowed to look", which is
+  # not the same as the features being off.
+  #
+  # GitHub Advanced Security was unbundled on 1 April 2025 into GitHub Code
+  # Security and GitHub Secret Protection. Repositories covered by the
+  # standalone Code Security product report through .code_security and leave
+  # .advanced_security unset, so reading only the latter reports code scanning
+  # as disabled for every organization that bought or renewed since then.
+  local security_analysis='{"available":false,"advanced_security":"unknown","code_security":"unknown","code_security_enabled":false,"secret_scanning":"unknown","secret_scanning_push_protection":"unknown","secret_scanning_delegated_bypass":"unknown","dependabot_security_updates":"unknown"}'
+  if api_ok "$repo_dir/info.json"; then
+    security_analysis=$(jq '.security_and_analysis as $s | {
+      available: ($s != null),
+      advanced_security: ($s.advanced_security.status // "unknown"),
+      code_security: ($s.code_security.status // "unknown"),
+      code_security_enabled: (
+        ($s.code_security.status == "enabled") or
+        ($s.advanced_security.status == "enabled")),
+      secret_scanning: ($s.secret_scanning.status // "unknown"),
+      secret_scanning_push_protection: ($s.secret_scanning_push_protection.status // "unknown"),
+      # Delegated bypass routes a push protection override through a reviewer.
+      # Without it any contributor can wave a secret through unilaterally.
+      secret_scanning_delegated_bypass: ($s.secret_scanning_delegated_bypass.status // "unknown"),
+      dependabot_security_updates: ($s.dependabot_security_updates.status // "unknown")
+    }' "$repo_dir/info.json")
+  fi
+
+  # Actions configuration. A default GITHUB_TOKEN with write access, or an
+  # Actions run that can approve pull requests, undoes the review controls
+  # scored above, so these are collected and reported rather than just filed.
+  local actions='{"available":false,"enabled":null,"allowed_actions":"unknown","default_workflow_permissions":"unknown","can_approve_pull_request_reviews":null}'
+  if api_ok "$repo_dir/workflows/default_workflow_permissions.json"; then
+    actions=$(jq -n \
+      --slurpfile policy_in "$repo_dir/workflows/actions_permissions.json" \
+      --slurpfile token_in "$repo_dir/workflows/default_workflow_permissions.json" \
+      '($policy_in[0] // {}) as $policy
+       | ($token_in[0] // {}) as $token
+       | {
+           available: true,
+           enabled: ($policy.enabled // null),
+           allowed_actions: ($policy.allowed_actions // "unknown"),
+           default_workflow_permissions: ($token.default_workflow_permissions // "unknown"),
+           can_approve_pull_request_reviews: ($token.can_approve_pull_request_reviews // null)
+         }')
+  fi
+
+  # Push protection that is routinely bypassed is not push protection. Bypass
+  # requests are evidence for whether the control holds in practice.
+  local bypasses='{"available":false,"total":0,"approved":0,"pending":0}'
+  if api_ok "$repo_dir/push_protection_bypasses.json"; then
+    bypasses=$(jq '{
+      available: true,
+      total: length,
+      approved: ([.[] | select(.status == "approved" or .status == "completed")] | length),
+      pending: ([.[] | select(.status == "pending")] | length)
+    }' "$repo_dir/push_protection_bypasses.json")
+  fi
+
+  local codeowners=false
+  api_ok "$repo_dir/codeowners.json" && codeowners=true
+  local security_policy=false
+  api_ok "$repo_dir/security_policy.json" && security_policy=true
+  local dependabot_alerts_enabled=false
+  api_ok "$repo_dir/dependabot_alerts_enabled.json" && dependabot_alerts_enabled=true
+
+  jq -n \
+    --arg name "$repo_name" \
+    --argjson info "$(api_ok "$repo_dir/info.json" && cat "$repo_dir/info.json" || echo '{}')" \
+    --argjson protection "$protection" \
+    --argjson rulesets "$rulesets" \
+    --argjson branches "$branches" \
+    --argjson alerts "$alerts" \
+    --argjson supply_chain "$supply_chain" \
+    --argjson security_analysis "$security_analysis" \
+    --argjson actions "$actions" \
+    --argjson bypasses "$bypasses" \
+    --argjson codeowners "$codeowners" \
+    --argjson security_policy "$security_policy" \
+    --argjson dependabot_alerts_enabled "$dependabot_alerts_enabled" \
+    --argjson signed_release "$signed_release" \
+    --argjson sbom_release "$sbom_release" \
+    '{
+      name: $name,
+      archived: ($info.archived // false),
+      fork: ($info.fork // false),
+      private: ($info.private // true),
+      empty: (($info.size // 0) == 0 and ($info.default_branch // "") == ""),
+      default_branch: ($info.default_branch // null),
+      pushed_at: ($info.pushed_at // null),
+      web_commit_signoff_required: ($info.web_commit_signoff_required // false),
+      branch_protection: $protection,
+      rulesets: $rulesets,
+      branches: $branches,
+      protected: ($protection.present or ($rulesets.active_branch_rulesets > 0)),
+      security_analysis: $security_analysis,
+      actions: $actions,
+      push_protection_bypasses: $bypasses,
+      dependabot_alerts_enabled: $dependabot_alerts_enabled,
+      codeowners: $codeowners,
+      security_policy: $security_policy,
+      alerts: $alerts,
+      supply_chain: ($supply_chain + {
+        signed_release_assets: $signed_release,
+        sbom_release_assets: $sbom_release,
+        sbom: ($supply_chain.sbom or $sbom_release),
+        signing: ($supply_chain.signing or $signed_release)
+      })
+    }'
+}
+
+# Count open alerts by severity and flag anything past a remediation deadline.
+# FedRAMP and PCI-DSS both score on how long a finding has been open, not just
+# on how many exist, so age is captured here rather than thrown away.
+summarize_alerts() {
+  local file="$1"
+  local kind="$2"
+  local now_epoch="$3"
+
+  if ! api_ok "$file"; then
+    jq -n --arg status "$(api_status "$file")" \
+      '{available: false, http_status: $status, open: 0, critical: 0, high: 0, medium: 0, low: 0, past_due: 0, oldest_open_days: null}'
+    return
+  fi
+
+  jq --arg kind "$kind" --argjson now "$now_epoch" '
+    def severity:
+      if $kind == "dependabot" then (.security_advisory.severity // .security_vulnerability.severity // "unknown")
+      elif $kind == "code_scanning" then (.rule.security_severity_level // .rule.severity // "unknown")
+      else "high"  # every leaked secret is treated as high severity
+      end;
+    def is_open: ((.state // "open") | ascii_downcase) == "open";
+    def age_days: (((.created_at // empty) | fromdateiso8601 | ($now - .) / 86400) | floor);
+    # Remediation windows: FedRAMP RA-5 / PCI 6.3.1 style.
+    def deadline: if severity == "critical" then 15
+                  elif severity == "high" then 30
+                  elif severity == "medium" then 90
+                  else 180 end;
+    [.[] | select(is_open)] as $open
+    | {
+        available: true,
+        http_status: "200",
+        open: ($open | length),
+        critical: ([$open[] | select(severity == "critical")] | length),
+        high: ([$open[] | select(severity == "high")] | length),
+        medium: ([$open[] | select(severity == "medium")] | length),
+        low: ([$open[] | select(severity == "low" or severity == "note" or severity == "warning")] | length),
+        past_due: ([$open[] | select((age_days // 0) > deadline)] | length),
+        oldest_open_days: ([$open[] | age_days] | max // null)
+      }
+  ' "$file"
 }
 
 # Function to process a single repository (for parallel execution)
@@ -197,252 +602,151 @@ process_repository() {
   local repo_name="$1"
   local org_name="$2"
   local output_dir="$3"
-  local auth_header="$4"
-  
-  # Re-export functions for parallel execution
-  export -f api_call_with_retry
-  export -f api_call_paginated
-  export AUTH_HEADER="$auth_header"
-  export RETRY_ATTEMPTS
-  export RETRY_DELAY
-  
-  echo "Processing repository: $repo_name"
-  
-  # Create repository directory
+
   local repo_dir="$output_dir/repositories/$repo_name"
-  mkdir -p "$repo_dir"
-  
-  # Get repository details
+  mkdir -p "$repo_dir/branches" "$repo_dir/workflows" "$repo_dir/supply_chain/workflow_analysis"
+
+  # Repository details. security_and_analysis on this payload is the source of
+  # truth for Code Security and Secret Protection state, so it is fetched once
+  # and reused rather than requested twice as it used to be.
   api_call_with_retry "repos/$org_name/$repo_name" "$repo_dir/info.json"
-  
-  # Extract default branch
-  local default_branch=$(jq -r '.default_branch // "main"' "$repo_dir/info.json")
-  
-  # Check branch protection rules
-  mkdir -p "$repo_dir/branches"
+
+  local default_branch
+  default_branch=$(jq -r '.default_branch // empty' "$repo_dir/info.json" 2>/dev/null || echo "")
+
   api_call_with_retry "repos/$org_name/$repo_name/branches" "$repo_dir/branches/all_branches.json"
-  
-  # Get protection for default branch
-  api_call_with_retry "repos/$org_name/$repo_name/branches/$default_branch/protection" \
-    "$repo_dir/branches/${default_branch}_protection.json"
-  
-  # Security features
-  api_call_with_retry "repos/$org_name/$repo_name" "$repo_dir/security_features.json"
-  
-  # Check for repository rulesets (new feature)
-  api_call_with_retry "repos/$org_name/$repo_name/rulesets" "$repo_dir/rulesets.json"
-  
-  # Dependabot alerts
-  api_call_paginated "repos/$org_name/$repo_name/dependabot/alerts" "$repo_dir/dependabot_alerts.json"
-  
-  # Code scanning alerts
-  api_call_paginated "repos/$org_name/$repo_name/code-scanning/alerts" "$repo_dir/code_scanning_alerts.json"
-  
-  # Secret scanning alerts
-  api_call_paginated "repos/$org_name/$repo_name/secret-scanning/alerts" "$repo_dir/secret_scanning_alerts.json"
-  
-  # Check for push protection bypasses
-  api_call_with_retry "repos/$org_name/$repo_name/secret-scanning/push-protection-bypasses" \
+
+  # An empty repository has no default branch and cannot be protected; asking
+  # for protection would only produce a misleading 404.
+  if [ -n "$default_branch" ]; then
+    api_call_with_retry "repos/$org_name/$repo_name/branches/$default_branch/protection" \
+      "$repo_dir/branches/default_protection.json"
+  else
+    api_error_payload 0 "Repository has no default branch (empty repository)" \
+      > "$repo_dir/branches/default_protection.json"
+  fi
+
+  # includes_parents pulls in organization-level rulesets that apply here. It
+  # defaults to true, but stating it prevents a repository governed only by an
+  # org ruleset from ever reading as unprotected.
+  api_call_with_retry "repos/$org_name/$repo_name/rulesets?includes_parents=true" \
+    "$repo_dir/rulesets.json"
+
+  # Only open alerts count against a control. Asking the API to filter also
+  # avoids paging through years of already-remediated findings.
+  api_call_paginated "repos/$org_name/$repo_name/dependabot/alerts?state=open" \
+    "$repo_dir/dependabot_alerts.json"
+  api_call_paginated "repos/$org_name/$repo_name/code-scanning/alerts?state=open" \
+    "$repo_dir/code_scanning_alerts.json"
+  api_call_paginated "repos/$org_name/$repo_name/secret-scanning/alerts?state=open" \
+    "$repo_dir/secret_scanning_alerts.json"
+
+  # Push protection bypass requests (Secret Protection).
+  api_call_paginated "repos/$org_name/$repo_name/bypass-requests/secret-scanning" \
     "$repo_dir/push_protection_bypasses.json"
-  
-  # Workflows
-  mkdir -p "$repo_dir/workflows"
+
   api_call_with_retry "repos/$org_name/$repo_name/actions/workflows" "$repo_dir/workflows/workflows.json"
-  
-  # Check for GitHub Advanced Security
-  api_call_with_retry "repos/$org_name/$repo_name/vulnerability-alerts" "$repo_dir/ghas_status.json"
-  
-  # Security policy
+  api_call_with_retry "repos/$org_name/$repo_name/actions/permissions" "$repo_dir/workflows/actions_permissions.json"
+  api_call_with_retry "repos/$org_name/$repo_name/actions/permissions/workflow" \
+    "$repo_dir/workflows/default_workflow_permissions.json"
+
+  # Dependabot alert enablement (204 when on, 404 when off).
+  api_call_with_retry "repos/$org_name/$repo_name/vulnerability-alerts" \
+    "$repo_dir/dependabot_alerts_enabled.json"
+
   api_call_with_retry "repos/$org_name/$repo_name/contents/SECURITY.md" "$repo_dir/security_policy.json"
-  
-  # CODEOWNERS
+
   for path in ".github/CODEOWNERS" "CODEOWNERS" "docs/CODEOWNERS"; do
-    if api_call_with_retry "repos/$org_name/$repo_name/contents/$path" "$repo_dir/codeowners.json"; then
-      if ! grep -q '"error"' "$repo_dir/codeowners.json"; then
-        break
-      fi
+    api_call_with_retry "repos/$org_name/$repo_name/contents/$path" "$repo_dir/codeowners.json" || true
+    if api_ok "$repo_dir/codeowners.json"; then
+      break
     fi
   done
-  
-  # Supply chain security
-  mkdir -p "$repo_dir/supply_chain"
-  
-  # Check for SBOM generation
-  if [ -f "$repo_dir/workflows/workflows.json" ]; then
-    jq -r '.workflows[]?.name // empty' "$repo_dir/workflows/workflows.json" 2>/dev/null | \
-      grep -i -E "sbom|cyclonedx|spdx|syft" > "$repo_dir/supply_chain/sbom_workflows.txt" || \
-      echo "No SBOM workflows found" > "$repo_dir/supply_chain/sbom_workflows.txt"
+
+  # Workflow contents drive the supply-chain findings. Archived repositories
+  # cannot change, so their workflows are still worth reading, but the number
+  # of files per repository is capped to keep API spend predictable.
+  : > "$repo_dir/supply_chain/workflow_findings.json"
+  if api_ok "$repo_dir/workflows/workflows.json"; then
+    local workflow_path workflow_file findings
+    while IFS= read -r workflow_path; do
+      [ -n "$workflow_path" ] || continue
+      workflow_file="$repo_dir/supply_chain/workflow_analysis/$(basename "$workflow_path").json"
+      api_call_with_retry "repos/$org_name/$repo_name/contents/$workflow_path" "$workflow_file" || continue
+      api_ok "$workflow_file" || continue
+      findings=$(jq -r '.content // ""' "$workflow_file" | tr -d '\n' | b64_decode | analyze_workflow_yaml)
+      jq -c --arg path "$workflow_path" '. + {path: $path}' <<< "$findings" \
+        >> "$repo_dir/supply_chain/workflow_findings.json"
+    done < <(jq -r --argjson cap "${MAX_WORKFLOWS_PER_REPO:-25}" \
+      '[.workflows[]? | select(.state == "active") | .path] | .[:$cap] | .[]' \
+      "$repo_dir/workflows/workflows.json" 2>/dev/null)
   fi
-  
-  # Check for signing workflows
-  if [ -f "$repo_dir/workflows/workflows.json" ]; then
-    jq -r '.workflows[]?.name // empty' "$repo_dir/workflows/workflows.json" 2>/dev/null | \
-      grep -i -E "sign|cosign|sigstore|signature" > "$repo_dir/supply_chain/signing_workflows.txt" || \
-      echo "No signing workflows found" > "$repo_dir/supply_chain/signing_workflows.txt"
-  fi
-  
-  # Check for dependency pinning in workflows
-  mkdir -p "$repo_dir/supply_chain/workflow_analysis"
-  if [ -f "$repo_dir/workflows/workflows.json" ]; then
-    # Get workflow files to check for pinned actions
-    jq -r '.workflows[]?.path // empty' "$repo_dir/workflows/workflows.json" 2>/dev/null | while read -r workflow_path; do
-      if [ -n "$workflow_path" ]; then
-        local workflow_name=$(basename "$workflow_path")
-        api_call_with_retry "repos/$org_name/$repo_name/contents/$workflow_path" \
-          "$repo_dir/supply_chain/workflow_analysis/${workflow_name}.json"
-      fi
-    done
-  fi
-  
-  # Check latest release for supply chain artifacts
+
   api_call_with_retry "repos/$org_name/$repo_name/releases/latest" "$repo_dir/supply_chain/latest_release.json"
-  
-  if [ -f "$repo_dir/supply_chain/latest_release.json" ] && ! grep -q '"error"' "$repo_dir/supply_chain/latest_release.json"; then
-    local release_id=$(jq -r '.id // empty' "$repo_dir/supply_chain/latest_release.json")
+  if api_ok "$repo_dir/supply_chain/latest_release.json"; then
+    local release_id
+    release_id=$(jq -r '.id // empty' "$repo_dir/supply_chain/latest_release.json")
     if [ -n "$release_id" ]; then
-      api_call_with_retry "repos/$org_name/$repo_name/releases/$release_id/assets" \
+      api_call_paginated "repos/$org_name/$repo_name/releases/$release_id/assets" \
         "$repo_dir/supply_chain/release_assets.json"
     fi
   fi
-  
-  # Update progress
+
+  # AUDIT_NOW_EPOCH pins the clock so an evidence set can be re-scored later and
+  # produce the same finding ages it produced on the day of the run.
+  summarize_repository "$repo_dir" "$repo_name" "${AUDIT_NOW_EPOCH:-$(date +%s)}" \
+    > "$repo_dir/analysis.json"
+
   update_progress
 }
 
 # Export functions for parallel execution
 export -f process_repository
+export -f summarize_repository
+export -f summarize_alerts
+export -f analyze_workflow_yaml
 export -f api_call_with_retry
 export -f api_call_paginated
+export -f api_error_payload
+export -f api_ok
+export -f api_status
+export -f b64_decode
 export -f update_progress
 
-# Framework-specific check functions
+# Report rendering helpers
 
-# Check if a control is applicable to the selected framework
-is_control_applicable() {
-  local control="$1"
-  local framework="$2"
-  
-  case "$framework" in
-    "fedramp"|"nist"|"all")
-      # All controls apply for FedRAMP/NIST
-      return 0
-      ;;
-    "soc2")
-      # SOC2 Trust Service Criteria mapping
-      case "$control" in
-        "access_control"|"authentication"|"monitoring"|"encryption"|"audit_logs"|"vulnerability_management")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
-    "hipaa")
-      # HIPAA Security Rule controls
-      case "$control" in
-        "access_control"|"authentication"|"encryption"|"audit_logs"|"integrity"|"transmission_security")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
-    "iso27001")
-      # ISO 27001 Annex A controls
-      case "$control" in
-        "access_control"|"authentication"|"monitoring"|"encryption"|"audit_logs"|"vulnerability_management"|"incident_response")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
-    "pci-dss")
-      # PCI-DSS requirements
-      case "$control" in
-        "access_control"|"authentication"|"monitoring"|"encryption"|"vulnerability_management"|"secure_development")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
+# ✓ when the measurement clears the bar, ⚠ when it is within 20% of it,
+# ✗ otherwise.
+status_for() {
+  local value="$1" required="$2"
+  if [ "$value" -ge "$required" ]; then
+    echo "✓"
+  elif [ "$value" -ge $(( required * 8 / 10 )) ]; then
+    echo "⚠"
+  else
+    echo "✗"
+  fi
+}
+
+# ✓/✗ for a boolean control.
+bool_status() {
+  case "$1" in
+    true|Yes|yes|enabled) echo "✓" ;;
+    *) echo "✗" ;;
   esac
 }
 
-# Get framework-specific requirements
-get_framework_requirements() {
-  local framework="$1"
-  
-  case "$framework" in
-    "soc2")
-      echo "SOC 2 Type II Trust Service Criteria (TSC)"
-      echo "- CC6.1: Logical and Physical Access Controls"
-      echo "- CC6.6: System Operations" 
-      echo "- CC7.1: System Monitoring"
-      echo "- CC7.2: Anomaly Detection"
-      ;;
-    "hipaa")
-      echo "HIPAA Security Rule Requirements"
-      echo "- 164.308(a)(1): Security Management Process"
-      echo "- 164.308(a)(3): Workforce Security"
-      echo "- 164.308(a)(4): Information Access Management"
-      echo "- 164.312(a)(1): Access Control"
-      echo "- 164.312(b): Audit Controls"
-      ;;
-    "iso27001")
-      echo "ISO 27001:2022 Annex A Controls"
-      echo "- A.9: Access Control"
-      echo "- A.12: Operations Security"
-      echo "- A.14: System Development Security"
-      echo "- A.16: Incident Management"
-      ;;
-    "pci-dss")
-      echo "PCI-DSS v4.0 Requirements"
-      echo "- Requirement 1-2: Network Security"
-      echo "- Requirement 3-4: Data Protection"
-      echo "- Requirement 7-8: Access Control"
-      echo "- Requirement 10: Logging and Monitoring"
-      echo "- Requirement 11: Security Testing"
-      ;;
-  esac
-}
-
-# Check framework-specific compliance
-check_framework_compliance() {
-  local framework="$1"
-  local metric="$2"
-  local value="$3"
-  local threshold="$4"
-  
-  case "$framework" in
-    "soc2")
-      # SOC2 generally requires 90%+ compliance
-      [ "$value" -ge 90 ] && return 0 || return 1
-      ;;
-    "hipaa")
-      # HIPAA has strict requirements
-      case "$metric" in
-        "encryption"|"audit_logs"|"access_control")
-          [ "$value" -eq 100 ] && return 0 || return 1
-          ;;
-        *)
-          [ "$value" -ge 95 ] && return 0 || return 1
-          ;;
-      esac
-      ;;
-    "iso27001")
-      # ISO 27001 requirements vary by control
-      [ "$value" -ge "$threshold" ] && return 0 || return 1
-      ;;
-    "pci-dss")
-      # PCI-DSS has very strict requirements
-      case "$metric" in
-        "vulnerability_scanning"|"access_control"|"monitoring")
-          [ "$value" -eq 100 ] && return 0 || return 1
-          ;;
-        *)
-          [ "$value" -ge 95 ] && return 0 || return 1
-          ;;
-      esac
-      ;;
-    *)
-      # Default FedRAMP/NIST thresholds
-      [ "$value" -ge "$threshold" ] && return 0 || return 1
-      ;;
-  esac
+# "Not assessed" is a distinct outcome from "failed". A control the token could
+# not see must never be reported as either a pass or a finding.
+evidence_status() {
+  local available="$1" pass="$2"
+  if [ "$available" != "true" ]; then
+    echo "?"
+  elif [ "$pass" = "true" ]; then
+    echo "✓"
+  else
+    echo "✗"
+  fi
 }
 
 # Main execution
@@ -452,8 +756,10 @@ echo "Gathering organization information..."
 api_call_with_retry "orgs/$ORG_NAME" "$OUTPUT_DIR/organization_info.json"
 
 # Check if organization exists
-if grep -q '"error"' "$OUTPUT_DIR/organization_info.json"; then
-  echo "Error: Unable to access organization $ORG_NAME"
+if ! api_ok "$OUTPUT_DIR/organization_info.json"; then
+  echo "Error: Unable to access organization '$ORG_NAME' (HTTP $(api_status "$OUTPUT_DIR/organization_info.json"))." >&2
+  echo "       Check the org slug, your token scopes (repo, read:org, admin:org_hook, security_events)," >&2
+  echo "       and that the token's SSO authorization covers this organization." >&2
   exit 1
 fi
 
@@ -461,224 +767,565 @@ fi
 echo "Gathering organization security settings..."
 mkdir -p "$OUTPUT_DIR/org_security"
 
-# Organization members
+# The org payload already contains the 2FA and default security settings, so it
+# is reused rather than fetched a second time.
+cp "$OUTPUT_DIR/organization_info.json" "$OUTPUT_DIR/org_security/org_details.json"
+
 api_call_paginated "orgs/$ORG_NAME/members" "$OUTPUT_DIR/org_security/members.json"
-
-# Security managers
-api_call_with_retry "orgs/$ORG_NAME/security-managers" "$OUTPUT_DIR/org_security/security_managers.json"
-
-# Teams
+# Owners hold irrevocable administrative access, so their number is an AC-6
+# measurement in its own right.
+api_call_paginated "orgs/$ORG_NAME/members?role=admin" "$OUTPUT_DIR/org_security/owners.json"
+api_call_paginated "orgs/$ORG_NAME/security-managers" "$OUTPUT_DIR/org_security/security_managers.json"
 api_call_paginated "orgs/$ORG_NAME/teams" "$OUTPUT_DIR/org_security/teams.json"
+api_call_paginated "orgs/$ORG_NAME/hooks" "$OUTPUT_DIR/org_security/webhooks.json"
+# Organization rulesets enforce change control across every repository at once,
+# which is stronger evidence for CM-3 than the same rules repeated per repo.
+api_call_paginated "orgs/$ORG_NAME/rulesets" "$OUTPUT_DIR/org_security/org_rulesets.json"
 
-# 2FA requirement
-api_call_with_retry "orgs/$ORG_NAME" "$OUTPUT_DIR/org_security/org_details.json"
-jq -r '.two_factor_requirement_enabled' "$OUTPUT_DIR/org_security/org_details.json" > \
-  "$OUTPUT_DIR/org_security/two_factor_required.txt"
+# Code security configurations replaced the org-level *_enabled_for_new_repositories
+# fields, which GitHub removed from the organization API on 21 April 2026. They
+# are now the only way to see what new repositories inherit.
+api_call_paginated "orgs/$ORG_NAME/code-security/configurations" \
+  "$OUTPUT_DIR/org_security/code_security_configurations.json"
+api_call_paginated "orgs/$ORG_NAME/code-security/configurations/defaults" \
+  "$OUTPUT_DIR/org_security/code_security_defaults.json"
+# This endpoint wraps its list in an object, so it is not paginated the same way.
+api_call_with_retry "orgs/$ORG_NAME/installations?per_page=100" "$OUTPUT_DIR/org_security/github_apps.json"
 
-# GitHub Advanced Security status
-jq -r '.plan.advanced_security' "$OUTPUT_DIR/org_security/org_details.json" > \
-  "$OUTPUT_DIR/org_security/ghas_enabled.txt" 2>/dev/null || echo "false" > "$OUTPUT_DIR/org_security/ghas_enabled.txt"
-
-# Enterprise settings (if available)
-api_call_with_retry "orgs/$ORG_NAME/settings" "$OUTPUT_DIR/org_security/enterprise_settings.json"
-
-# Organization audit log
+# Audit log streaming is Enterprise Cloud only; a 404 here is a real finding
+# rather than a tooling error, so the status is preserved for the report.
 api_call_with_retry "orgs/$ORG_NAME/audit-log?per_page=10" "$OUTPUT_DIR/org_security/audit_log_sample.json"
 
-# Organization webhooks
-api_call_paginated "orgs/$ORG_NAME/hooks" "$OUTPUT_DIR/org_security/webhooks.json"
-
-# GitHub Apps
-api_call_paginated "orgs/$ORG_NAME/installations" "$OUTPUT_DIR/org_security/github_apps.json"
-
-# Organization-wide security policy
+# Organization-wide security policy lives in the .github repository.
 api_call_with_retry "repos/$ORG_NAME/.github/contents/SECURITY.md" "$OUTPUT_DIR/org_security/security_policy.json"
 
 # 3. Repository Processing
 echo "Gathering repository list..."
 api_call_paginated "orgs/$ORG_NAME/repos" "$OUTPUT_DIR/repositories.json"
 
-# Count repositories
-total_repos=$(jq '. | length' "$OUTPUT_DIR/repositories.json")
+total_repos=$(jq 'length' "$OUTPUT_DIR/repositories.json")
 echo "$total_repos" > "$OUTPUT_DIR/.total"
 echo "Found $total_repos repositories"
 
-# Extract repository names
 jq -r '.[].name' "$OUTPUT_DIR/repositories.json" > "$OUTPUT_DIR/repo_list.txt"
 
-# Process repositories in parallel
-echo "Processing repositories (parallel execution with $MAX_PARALLEL_JOBS workers)..."
 mkdir -p "$OUTPUT_DIR/repositories"
+export OUTPUT_DIR
 
-cat "$OUTPUT_DIR/repo_list.txt" | \
-  parallel -j "$MAX_PARALLEL_JOBS" \
-    process_repository {} "$ORG_NAME" "$OUTPUT_DIR" "$AUTH_HEADER"
-
-echo -e "\n"
-
-# 4. Generate Enhanced Compliance Report
-echo "Generating $FRAMEWORK compliance report..."
-
-# Calculate metrics
-protected_repos=0
-sbom_repos=0
-signing_repos=0
-rulesets_repos=0
-ghas_repos=0
-codeowners_repos=0
-
-while read -r repo_name; do
-  repo_dir="$OUTPUT_DIR/repositories/$repo_name"
-  
-  # Check branch protection
-  default_branch=$(jq -r '.default_branch // "main"' "$repo_dir/info.json" 2>/dev/null || echo "main")
-  if [ -f "$repo_dir/branches/${default_branch}_protection.json" ] && \
-     ! grep -q '"error"' "$repo_dir/branches/${default_branch}_protection.json" 2>/dev/null; then
-    ((protected_repos++))
+if [ "$total_repos" -gt 0 ]; then
+  echo "Processing repositories ($MAX_PARALLEL_JOBS workers)..."
+  if [ "$RUNNER" = "parallel" ]; then
+    # GNU parallel runs each job through $SHELL, which is zsh by default on
+    # macOS, and zsh does not import the exported bash functions this script
+    # relies on. PARALLEL_SHELL pins it to bash.
+    # --will-cite suppresses the interactive citation notice on first run.
+    PARALLEL_SHELL="$(command -v bash)" \
+      parallel --will-cite -j "$MAX_PARALLEL_JOBS" \
+        process_repository {} "$ORG_NAME" "$OUTPUT_DIR" \
+        < "$OUTPUT_DIR/repo_list.txt"
+  else
+    # shellcheck disable=SC2016  # $1..$3 belong to the inner shell, not this one
+    xargs -P "$MAX_PARALLEL_JOBS" -I {} \
+      bash -c 'process_repository "$1" "$2" "$3"' _ {} "$ORG_NAME" "$OUTPUT_DIR" \
+      < "$OUTPUT_DIR/repo_list.txt"
   fi
-  
-  # Check for rulesets
-  if [ -f "$repo_dir/rulesets.json" ] && \
-     [ "$(jq '. | length' "$repo_dir/rulesets.json" 2>/dev/null || echo 0)" -gt 0 ]; then
-    ((rulesets_repos++))
-  fi
-  
-  # Check GHAS
-  if [ -f "$repo_dir/security_features.json" ]; then
-    if jq -e '.security_and_analysis.advanced_security.status == "enabled"' "$repo_dir/security_features.json" &>/dev/null; then
-      ((ghas_repos++))
-    fi
-  fi
-  
-  # Check CODEOWNERS
-  if [ -f "$repo_dir/codeowners.json" ] && ! grep -q '"error"' "$repo_dir/codeowners.json" 2>/dev/null; then
-    ((codeowners_repos++))
-  fi
-  
-  # Check SBOM
-  if [ -f "$repo_dir/supply_chain/sbom_workflows.txt" ] && \
-     [ "$(cat "$repo_dir/supply_chain/sbom_workflows.txt")" != "No SBOM workflows found" ]; then
-    ((sbom_repos++))
-  fi
-  
-  # Check signing
-  if [ -f "$repo_dir/supply_chain/signing_workflows.txt" ] && \
-     [ "$(cat "$repo_dir/supply_chain/signing_workflows.txt")" != "No signing workflows found" ]; then
-    ((signing_repos++))
-  fi
-done < "$OUTPUT_DIR/repo_list.txt"
-
-# Get organization metrics
-two_factor_required=$(cat "$OUTPUT_DIR/org_security/two_factor_required.txt" 2>/dev/null || echo "false")
-ghas_enabled=$(cat "$OUTPUT_DIR/org_security/ghas_enabled.txt" 2>/dev/null || echo "false")
-has_security_managers="No"
-if [ -f "$OUTPUT_DIR/org_security/security_managers.json" ] && \
-   ! grep -q '"error"' "$OUTPUT_DIR/org_security/security_managers.json" 2>/dev/null; then
-  has_security_managers="Yes"
+  echo
 fi
 
-# Count security alerts
-total_dependabot_alerts=0
-total_code_scanning_alerts=0
-total_secret_scanning_alerts=0
+# 4. Aggregate evidence into a machine-readable summary
+echo "Aggregating findings..."
 
-while read -r repo_name; do
-  repo_dir="$OUTPUT_DIR/repositories/$repo_name"
-  
-  if [ -f "$repo_dir/dependabot_alerts.json" ]; then
-    count=$(jq '. | length' "$repo_dir/dependabot_alerts.json" 2>/dev/null || echo 0)
-    ((total_dependabot_alerts += count))
-  fi
-  
-  if [ -f "$repo_dir/code_scanning_alerts.json" ]; then
-    count=$(jq '. | length' "$repo_dir/code_scanning_alerts.json" 2>/dev/null || echo 0)
-    ((total_code_scanning_alerts += count))
-  fi
-  
-  if [ -f "$repo_dir/secret_scanning_alerts.json" ]; then
-    count=$(jq '. | length' "$repo_dir/secret_scanning_alerts.json" 2>/dev/null || echo 0)
-    ((total_secret_scanning_alerts += count))
+# One JSON Lines file keeps the aggregation independent of ARG_MAX, which
+# matters for organizations with thousands of repositories.
+: > "$OUTPUT_DIR/repository_analysis.jsonl"
+while IFS= read -r repo_name; do
+  analysis="$OUTPUT_DIR/repositories/$repo_name/analysis.json"
+  if [ -f "$analysis" ]; then
+    jq -c '.' "$analysis" >> "$OUTPUT_DIR/repository_analysis.jsonl"
   fi
 done < "$OUTPUT_DIR/repo_list.txt"
 
-# Calculate percentages safely
+org_details="$OUTPUT_DIR/org_security/org_details.json"
+security_managers_count=0
+if api_ok "$OUTPUT_DIR/org_security/security_managers.json"; then
+  # An empty array means the role exists but nobody holds it, which is not the
+  # same as the control being satisfied.
+  security_managers_count=$(jq 'if type == "array" then length else 0 end' \
+    "$OUTPUT_DIR/org_security/security_managers.json")
+fi
+
+audit_log_available=false
+api_ok "$OUTPUT_DIR/org_security/audit_log_sample.json" && audit_log_available=true
+org_security_policy=false
+api_ok "$OUTPUT_DIR/org_security/security_policy.json" && org_security_policy=true
+
+# What a newly created repository inherits. Enforced configurations also stop a
+# repository admin from turning the controls back off, which is the difference
+# between a setting and a control.
+code_security_config='{"available":false,"configurations":0,"enforced":0,"default_for_new_repos":null,"defaults_enable_code_security":null,"defaults_enable_push_protection":null,"defaults_enable_private_vulnerability_reporting":null}'
+if api_ok "$OUTPUT_DIR/org_security/code_security_configurations.json"; then
+  code_security_config=$(jq -n \
+    --slurpfile configs "$OUTPUT_DIR/org_security/code_security_configurations.json" \
+    --slurpfile defaults "$OUTPUT_DIR/org_security/code_security_defaults.json" \
+    '($configs[0] // []) as $c
+     | (($defaults[0] // []) | if type == "array" then . else [] end) as $d
+     # "all" covers every visibility; a default scoped to public only leaves
+     # private repositories inheriting nothing.
+     | ([$d[] | select(.default_for_new_repos == "all")] | first) as $broad
+     | ($broad // ($d | first)) as $chosen
+     | {
+         available: true,
+         configurations: ($c | length),
+         enforced: ([$c[] | select(.enforcement == "enforced")] | length),
+         default_for_new_repos: ($chosen.default_for_new_repos // null),
+         defaults_enable_code_security: (
+           if $chosen == null then null
+           else (($chosen.configuration.code_security // $chosen.configuration.advanced_security) as $v
+                 | $v == "enabled" or $v == "code_security")
+           end),
+         defaults_enable_push_protection: (
+           if $chosen == null then null
+           else ($chosen.configuration.secret_scanning_push_protection == "enabled")
+           end),
+         defaults_enable_private_vulnerability_reporting: (
+           if $chosen == null then null
+           else ($chosen.configuration.private_vulnerability_reporting == "enabled")
+           end)
+       }')
+fi
+
+org_rulesets='{"available":false,"total":0,"active":0}'
+if api_ok "$OUTPUT_DIR/org_security/org_rulesets.json"; then
+  org_rulesets=$(jq '{
+    available: true,
+    total: length,
+    active: ([.[] | select(.enforcement == "active")] | length)
+  }' "$OUTPUT_DIR/org_security/org_rulesets.json")
+fi
+
+org_owners=0
+if api_ok "$OUTPUT_DIR/org_security/owners.json"; then
+  org_owners=$(jq 'if type == "array" then length else 0 end' "$OUTPUT_DIR/org_security/owners.json")
+fi
+org_members=0
+if api_ok "$OUTPUT_DIR/org_security/members.json"; then
+  org_members=$(jq 'if type == "array" then length else 0 end' "$OUTPUT_DIR/org_security/members.json")
+fi
+
+# A webhook without a secret accepts unauthenticated payloads, and one with SSL
+# verification disabled ships them in the clear. Both are AU-9 / SC-8 findings
+# that the evidence tree already contained but nothing ever read.
+org_webhooks='{"available":false,"total":0,"without_secret":0,"insecure_ssl":0,"inactive":0}'
+if api_ok "$OUTPUT_DIR/org_security/webhooks.json"; then
+  org_webhooks=$(jq '{
+    available: true,
+    total: length,
+    without_secret: ([.[] | select(.config.secret == null)] | length),
+    insecure_ssl: ([.[] | select((.config.insecure_ssl // "0") | tostring == "1")] | length),
+    inactive: ([.[] | select(.active == false)] | length)
+  }' "$OUTPUT_DIR/org_security/webhooks.json")
+fi
+
+# Installed Apps are third-party access to your source. Write-capable ones are
+# the supplier relationships SR-6 asks you to have assessed.
+org_apps='{"available":false,"total":0,"with_write_access":0,"with_admin_access":0,"all_repositories":0}'
+if api_ok "$OUTPUT_DIR/org_security/github_apps.json"; then
+  org_apps=$(jq '(.installations // []) as $apps | {
+    available: true,
+    total: ($apps | length),
+    with_write_access: ([$apps[] | select(
+      [.permissions // {} | to_entries[] | select(.value == "write")] | length > 0)] | length),
+    with_admin_access: ([$apps[] | select(
+      [.permissions // {} | to_entries[] | select(.value == "admin")] | length > 0)] | length),
+    all_repositories: ([$apps[] | select(.repository_selection == "all")] | length)
+  }' "$OUTPUT_DIR/org_security/github_apps.json")
+fi
+
+# The scoring model is intentionally explicit: every point is attributable to a
+# named control so a reviewer can argue with the weighting instead of guessing
+# at it. Weights sum to 100; risk score is 100 minus the points earned.
+jq -s \
+  --slurpfile org "$org_details" \
+  --arg org_name "$ORG_NAME" \
+  --arg framework "$FRAMEWORK" \
+  --arg generated_at "$AUDIT_STARTED_AT" \
+  --arg tool_version "$AUDIT_TOOL_VERSION" \
+  --argjson security_managers "$security_managers_count" \
+  --argjson audit_log_available "$audit_log_available" \
+  --argjson org_security_policy "$org_security_policy" \
+  --argjson org_owners "$org_owners" \
+  --argjson org_members "$org_members" \
+  --argjson org_webhooks "$org_webhooks" \
+  --argjson org_apps "$org_apps" \
+  --argjson org_rulesets "$org_rulesets" \
+  --argjson code_security_config "$code_security_config" \
+  --argjson include_archived "$([ "$INCLUDE_ARCHIVED" = "true" ] && echo true || echo false)" '
+  def pct($n; $d): if $d == 0 then 0 else (($n * 100 / $d) | floor) end;
+
+  . as $repos
+  | ($org[0] // {}) as $o
+  # Archived repositories are read-only and empty ones have nothing to protect;
+  # scoring them drags coverage down for no achievable remediation.
+  | [$repos[] | select(($include_archived or (.archived | not)) and (.empty | not))] as $scored
+  | ($scored | length) as $n
+  | {
+      protected: [$scored[] | select(.protected)] | length,
+      strong_review: [$scored[] | select(
+          .branch_protection.present and
+          (.branch_protection.required_reviews >= 1) and
+          .branch_protection.require_code_owner_reviews)] | length,
+      rulesets: [$scored[] | select(.rulesets.active_branch_rulesets > 0)] | length,
+      inherited_org_rulesets: [$scored[] | select(.rulesets.inherited > 0)] | length,
+      # Repositories carrying more than one branch where only some are protected.
+      partially_protected_branches: [$scored[] | select(
+        .branches.available and .branches.total > 1 and
+        .branches.protected > 0 and .branches.protected < .branches.total)] | length,
+      code_scanning: [$scored[] | select(.security_analysis.code_security_enabled)] | length,
+      secret_scanning: [$scored[] | select(.security_analysis.secret_scanning == "enabled")] | length,
+      push_protection: [$scored[] | select(.security_analysis.secret_scanning_push_protection == "enabled")] | length,
+      delegated_bypass: [$scored[] | select(.security_analysis.secret_scanning_delegated_bypass == "enabled")] | length,
+      push_protection_without_review: [$scored[] | select(
+        .security_analysis.secret_scanning_push_protection == "enabled" and
+        .security_analysis.secret_scanning_delegated_bypass != "enabled")] | length,
+      dependabot_updates: [$scored[] | select(.security_analysis.dependabot_security_updates == "enabled")] | length,
+      dependabot_alerts: [$scored[] | select(.dependabot_alerts_enabled)] | length,
+      codeowners: [$scored[] | select(.codeowners)] | length,
+      security_policy: [$scored[] | select(.security_policy)] | length,
+      sbom: [$scored[] | select(.supply_chain.sbom)] | length,
+      signing: [$scored[] | select(.supply_chain.signing)] | length,
+      attestation: [$scored[] | select(.supply_chain.attestation)] | length,
+      actions_total: ([$scored[] | .supply_chain.actions_total] | add // 0),
+      actions_pinned: ([$scored[] | .supply_chain.actions_pinned_to_sha] | add // 0),
+      workflows_total: ([$scored[] | .supply_chain.workflows] | add // 0),
+      workflows_with_permissions: ([$scored[] | .supply_chain.workflows_with_permissions] | add // 0),
+      read_only_default_token: [$scored[] | select(.actions.default_workflow_permissions == "read")] | length,
+      actions_can_approve_prs: [$scored[] | select(.actions.can_approve_pull_request_reviews == true)] | length,
+      unrestricted_actions_policy: [$scored[] | select(.actions.allowed_actions == "all")] | length,
+      actions_config_visible: [$scored[] | select(.actions.available)] | length,
+      security_settings_visible: [$scored[] | select(.security_analysis.available)] | length,
+      push_protection_bypasses_approved: ([$scored[] | .push_protection_bypasses.approved] | add // 0)
+    } as $c
+  | {
+      dependabot: {
+        open: ([$scored[] | .alerts.dependabot.open] | add // 0),
+        critical: ([$scored[] | .alerts.dependabot.critical] | add // 0),
+        high: ([$scored[] | .alerts.dependabot.high] | add // 0),
+        past_due: ([$scored[] | .alerts.dependabot.past_due] | add // 0),
+        repos_without_visibility: [$scored[] | select(.alerts.dependabot.available | not)] | length
+      },
+      code_scanning: {
+        open: ([$scored[] | .alerts.code_scanning.open] | add // 0),
+        critical: ([$scored[] | .alerts.code_scanning.critical] | add // 0),
+        high: ([$scored[] | .alerts.code_scanning.high] | add // 0),
+        past_due: ([$scored[] | .alerts.code_scanning.past_due] | add // 0),
+        repos_without_visibility: [$scored[] | select(.alerts.code_scanning.available | not)] | length
+      },
+      secret_scanning: {
+        open: ([$scored[] | .alerts.secret_scanning.open] | add // 0),
+        past_due: ([$scored[] | .alerts.secret_scanning.past_due] | add // 0),
+        repos_without_visibility: [$scored[] | select(.alerts.secret_scanning.available | not)] | length
+      },
+      # A repository counts as blind if any one of the three feeds is missing:
+      # partial visibility is still an incomplete vulnerability picture.
+      repositories_without_visibility: [$scored[] | select(
+        (.alerts.dependabot.available | not) or
+        (.alerts.code_scanning.available | not) or
+        (.alerts.secret_scanning.available | not))] | length
+    } as $alerts
+  | {
+      two_factor: (if ($o.two_factor_requirement_enabled // false) then 15 else 0 end),
+      branch_protection: ((pct($c.protected; $n) * 20 / 100) | floor),
+      review_quality: ((pct($c.strong_review; $n) * 10 / 100) | floor),
+      secret_protection: ((pct($c.push_protection; $n) * 15 / 100) | floor),
+      code_scanning: ((pct($c.code_scanning; $n) * 10 / 100) | floor),
+      dependency_monitoring: ((pct($c.dependabot_alerts; $n) * 5 / 100) | floor),
+      # Overdue findings are the only negative-facing term: full marks only when
+      # nothing has blown its remediation window.
+      remediation_timeliness: (
+        ($alerts.dependabot.past_due + $alerts.code_scanning.past_due + $alerts.secret_scanning.past_due) as $overdue
+        | if $overdue == 0 then 10 elif $overdue <= 5 then 5 elif $overdue <= 20 then 2 else 0 end),
+      ownership: ((pct($c.codeowners; $n) * 5 / 100) | floor),
+      # Pinning is worth 3 and a read-only default GITHUB_TOKEN 2: a workflow
+      # token with write access hands every third-party action commit rights.
+      workflow_hardening: (
+        ((pct($c.actions_pinned; $c.actions_total) * 3 / 100) | floor) +
+        ((pct($c.read_only_default_token; $n) * 2 / 100) | floor)),
+      provenance: ((pct($c.sbom; $n) * 3 / 100) + (pct($c.signing; $n) * 2 / 100) | floor)
+    } as $earned
+  | ($earned | to_entries | map(.value) | add) as $points
+  | (100 - $points) as $risk_score
+  | {
+      organization: $org_name,
+      framework: $framework,
+      generated_at: $generated_at,
+      tool_version: $tool_version,
+      repositories: {
+        total: ($repos | length),
+        scored: $n,
+        archived: ([$repos[] | select(.archived)] | length),
+        empty: ([$repos[] | select(.empty)] | length),
+        private: ([$repos[] | select(.private)] | length)
+      },
+      organization_controls: {
+        two_factor_required: ($o.two_factor_requirement_enabled // false),
+        security_managers: $security_managers,
+        owners: $org_owners,
+        members: $org_members,
+        webhooks: $org_webhooks,
+        github_apps: $org_apps,
+        rulesets: $org_rulesets,
+        default_repository_permission: ($o.default_repository_permission // "unknown"),
+        members_can_create_public_repositories: ($o.members_can_create_public_repositories // null),
+        web_commit_signoff_required: ($o.web_commit_signoff_required // false),
+        code_security_configurations: $code_security_config,
+        audit_log_accessible: $audit_log_available,
+        security_policy_published: $org_security_policy
+      },
+      coverage: {
+        branch_protection: pct($c.protected; $n),
+        rulesets: pct($c.rulesets; $n),
+        review_with_code_owners: pct($c.strong_review; $n),
+        code_scanning: pct($c.code_scanning; $n),
+        secret_scanning: pct($c.secret_scanning; $n),
+        push_protection: pct($c.push_protection; $n),
+        dependabot_alerts: pct($c.dependabot_alerts; $n),
+        dependabot_security_updates: pct($c.dependabot_updates; $n),
+        codeowners: pct($c.codeowners; $n),
+        security_policy: pct($c.security_policy; $n),
+        sbom: pct($c.sbom; $n),
+        signing: pct($c.signing; $n),
+        attestation: pct($c.attestation; $n),
+        actions_pinned_to_sha: pct($c.actions_pinned; $c.actions_total),
+        workflows_with_explicit_permissions: pct($c.workflows_with_permissions; $c.workflows_total),
+        read_only_default_token: pct($c.read_only_default_token; $n),
+        restricted_actions_policy: pct($n - $c.unrestricted_actions_policy; $n)
+      },
+      not_assessed: {
+        repositories_without_security_settings: ($n - $c.security_settings_visible),
+        repositories_without_actions_config: ($n - $c.actions_config_visible),
+        repositories_without_alert_data: $alerts.repositories_without_visibility
+      },
+      # Findings that are unambiguous regardless of framework: a workflow token
+      # that can approve pull requests defeats required review, and an approved
+      # push protection bypass means a secret reached the repository anyway.
+      hard_findings: {
+        repositories_where_actions_can_approve_prs: $c.actions_can_approve_prs,
+        repositories_allowing_any_third_party_action: $c.unrestricted_actions_policy,
+        approved_push_protection_bypasses: $c.push_protection_bypasses_approved,
+        organization_webhooks_without_secret: $org_webhooks.without_secret,
+        organization_webhooks_with_ssl_verification_disabled: $org_webhooks.insecure_ssl,
+        installed_apps_with_write_access: $org_apps.with_write_access
+      },
+      counts: $c,
+      alerts: $alerts,
+      score: {
+        risk_score: $risk_score,
+        points_earned: $points,
+        compliance_level: (if $risk_score <= 20 then "High" elif $risk_score <= 50 then "Medium" else "Low" end),
+        breakdown: $earned
+      }
+    }
+' "$OUTPUT_DIR/repository_analysis.jsonl" > "$OUTPUT_DIR/summary.json"
+
+# Pull the values the report templates use back out of the summary, so the
+# markdown and the JSON can never disagree.
+read_summary() { jq -r "$1" "$OUTPUT_DIR/summary.json"; }
+
+total_repos=$(read_summary '.repositories.total')
+scored_repos=$(read_summary '.repositories.scored')
+archived_repos=$(read_summary '.repositories.archived')
+two_factor_required=$(read_summary '.organization_controls.two_factor_required')
+security_managers_count=$(read_summary '.organization_controls.security_managers')
+has_security_managers=$([ "$security_managers_count" -gt 0 ] && echo "Yes" || echo "No")
+audit_log_available=$(read_summary '.organization_controls.audit_log_accessible')
+org_security_policy=$(read_summary '.organization_controls.security_policy_published')
+
+protected_percentage=$(read_summary '.coverage.branch_protection')
+rulesets_percentage=$(read_summary '.coverage.rulesets')
+review_percentage=$(read_summary '.coverage.review_with_code_owners')
+ghas_percentage=$(read_summary '.coverage.code_scanning')
+secret_scanning_percentage=$(read_summary '.coverage.secret_scanning')
+push_protection_percentage=$(read_summary '.coverage.push_protection')
+push_protection_without_review=$(read_summary '.counts.push_protection_without_review')
+default_config_for_new_repos=$(read_summary '.organization_controls.code_security_configurations.default_for_new_repos')
+codeowners_percentage=$(read_summary '.coverage.codeowners')
+sbom_percentage=$(read_summary '.coverage.sbom')
+signing_percentage=$(read_summary '.coverage.signing')
+attestation_percentage=$(read_summary '.coverage.attestation')
+pinning_percentage=$(read_summary '.coverage.actions_pinned_to_sha')
+workflow_permissions_percentage=$(read_summary '.coverage.workflows_with_explicit_permissions')
+read_only_token_percentage=$(read_summary '.coverage.read_only_default_token')
+restricted_actions_percentage=$(read_summary '.coverage.restricted_actions_policy')
+
+org_owners=$(read_summary '.organization_controls.owners')
+org_members=$(read_summary '.organization_controls.members')
+actions_can_approve_prs=$(read_summary '.hard_findings.repositories_where_actions_can_approve_prs')
+approved_bypasses=$(read_summary '.hard_findings.approved_push_protection_bypasses')
+webhooks_without_secret=$(read_summary '.hard_findings.organization_webhooks_without_secret')
+webhooks_insecure_ssl=$(read_summary '.hard_findings.organization_webhooks_with_ssl_verification_disabled')
+apps_with_write=$(read_summary '.hard_findings.installed_apps_with_write_access')
+settings_not_visible=$(read_summary '.not_assessed.repositories_without_security_settings')
+
+total_dependabot_alerts=$(read_summary '.alerts.dependabot.open')
+dependabot_critical=$(read_summary '.alerts.dependabot.critical')
+dependabot_high=$(read_summary '.alerts.dependabot.high')
+total_code_scanning_alerts=$(read_summary '.alerts.code_scanning.open')
+code_scanning_critical=$(read_summary '.alerts.code_scanning.critical')
+code_scanning_high=$(read_summary '.alerts.code_scanning.high')
+total_secret_scanning_alerts=$(read_summary '.alerts.secret_scanning.open')
+past_due_alerts=$(read_summary '.alerts.dependabot.past_due + .alerts.code_scanning.past_due + .alerts.secret_scanning.past_due')
+alerts_not_visible=$(read_summary '.alerts.repositories_without_visibility')
+
+risk_score=$(read_summary '.score.risk_score')
+compliance_level=$(read_summary '.score.compliance_level')
+
 if [ "$total_repos" -eq 0 ]; then
   echo "Warning: No repositories found for organization $ORG_NAME"
-  protected_percentage=0
-  rulesets_percentage=0
-  ghas_percentage=0
-  codeowners_percentage=0
-  sbom_percentage=0
-  signing_percentage=0
-else
-  protected_percentage=$((protected_repos * 100 / total_repos))
-  rulesets_percentage=$((rulesets_repos * 100 / total_repos))
-  ghas_percentage=$((ghas_repos * 100 / total_repos))
-  codeowners_percentage=$((codeowners_repos * 100 / total_repos))
-  sbom_percentage=$((sbom_repos * 100 / total_repos))
-  signing_percentage=$((signing_repos * 100 / total_repos))
 fi
 
-# Calculate risk score (0-100, lower is better)
-risk_score=100
-
-# Deduct points for good security practices
-[ "$two_factor_required" = "true" ] && ((risk_score -= 10))
-[ "$has_security_managers" = "Yes" ] && ((risk_score -= 5))
-[ "$ghas_enabled" = "true" ] && ((risk_score -= 10))
-((risk_score -= protected_percentage / 4))  # Max -25 points
-((risk_score -= rulesets_percentage / 10))  # Max -10 points
-((risk_score -= sbom_percentage / 10))      # Max -10 points
-((risk_score -= signing_percentage / 10))   # Max -10 points
-
-# Ensure risk score doesn't go below 0
-[ $risk_score -lt 0 ] && risk_score=0
-
-# Determine compliance level
-if [ $risk_score -le 20 ]; then
-  compliance_level="High"
-elif [ $risk_score -le 50 ]; then
-  compliance_level="Medium"
-else
-  compliance_level="Low"
-fi
+# 5. Generate the compliance report
+echo "Generating $FRAMEWORK compliance report..."
 
 # Framework-specific report generation functions
 
-# Generate SOC2 report
-generate_soc2_report() {
+# Every report opens with the same provenance block. Keeping it in one place
+# means the scope caveats cannot drift between frameworks.
+report_header() {
+  local title="$1"
+
   cat > "$REPORT_FILE" << EOF
-# GitHub SOC 2 Type II Compliance Report for $ORG_NAME
-## Generated on $(date)
+# $title for $ORG_NAME
+
+**Generated**: $AUDIT_STARTED_AT (UTC) by github_compliance_audit.sh v$AUDIT_TOOL_VERSION
 
 ## Executive Summary
 
-**Organization**: $ORG_NAME  
-**Total Repositories**: $total_repos  
-**Risk Score**: $risk_score/100 (lower is better)  
-**Compliance Level**: $compliance_level  
+| | |
+|---|---|
+| Organization | $ORG_NAME |
+| Repositories discovered | $total_repos |
+| Repositories scored | $scored_repos (archived: $archived_repos, excluded unless \`INCLUDE_ARCHIVED=true\`) |
+| Risk score | **$risk_score/100** (lower is better) |
+| Compliance level | **$compliance_level** |
 
+### Scope and evidence quality
+
+- Coverage percentages are calculated over the $scored_repos scored repositories.
+- \`?\` marks a control that could not be assessed with this token rather than one that failed.
+EOF
+
+  if [ "$alerts_not_visible" -gt 0 ]; then
+    cat >> "$REPORT_FILE" << EOF
+- **Repositories that returned no alert data: $alerts_not_visible.** Dependabot, code scanning,
+  or secret scanning is disabled there, or the token lacks \`security_events\`. Treat their
+  vulnerability posture as unknown, not clean.
+EOF
+  fi
+
+  if [ "$audit_log_available" != "true" ]; then
+    cat >> "$REPORT_FILE" << EOF
+- **The organization audit log was not readable.** It requires GitHub Enterprise Cloud plus
+  an owner-scoped token, so audit trail controls below are reported as not assessed.
+EOF
+  fi
+
+  if [ "$settings_not_visible" -gt 0 ]; then
+    cat >> "$REPORT_FILE" << EOF
+- **Repositories whose security settings were not visible: $settings_not_visible.** GitHub returns
+  \`security_and_analysis\` only to callers with admin permission on the repository, so
+  scanning coverage below understates reality for those. Re-run with an owner token
+  before treating the gap as real.
+EOF
+  fi
+
+  report_hard_findings
+  echo >> "$REPORT_FILE"
+}
+
+# Configuration that defeats another control outright. These are framework
+# independent, so they are rendered identically in every report.
+report_hard_findings() {
+  local any=false
+
+  {
+    echo
+    echo "### Configuration that undermines another control"
+    echo
+  } >> "$REPORT_FILE"
+
+  if [ "$actions_can_approve_prs" -gt 0 ]; then
+    echo "- **Repositories where GitHub Actions can approve pull requests: $actions_can_approve_prs.** A workflow can satisfy the review it was supposed to be checked by, which voids separation of duties (AC-5, PCI 6.5.1)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$read_only_token_percentage" -lt 100 ]; then
+    echo "- **The default \`GITHUB_TOKEN\` has write access in $(( 100 - read_only_token_percentage ))% of repositories.** Every third-party action in those workflows inherits commit rights (CM-7, SR-5)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$restricted_actions_percentage" -lt 100 ]; then
+    echo "- **Any third-party Action may run in $(( 100 - restricted_actions_percentage ))% of repositories.** There is no supplier gate on code executing in your CI (SR-5, SR-6)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$approved_bypasses" -gt 0 ]; then
+    echo "- **Approved push protection bypasses: $approved_bypasses.** A secret reached the repository despite push protection being enabled. Treat those secrets as exposed and rotate them." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$push_protection_without_review" -gt 0 ]; then
+    echo "- **Repositories where push protection can be bypassed without review: $push_protection_without_review.** Delegated bypass is off, so any contributor can wave a secret through unilaterally and the control depends on their judgement." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$default_config_for_new_repos" = "null" ]; then
+    echo "- **No code security configuration is applied to new repositories.** Every repository created from now on starts with scanning off, so today's coverage decays by default (CM-2, CM-6)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$webhooks_without_secret" -gt 0 ]; then
+    echo "- **Organization webhooks with no secret configured: $webhooks_without_secret.** Their receivers cannot authenticate payloads as coming from GitHub (SC-8, AU-9)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$webhooks_insecure_ssl" -gt 0 ]; then
+    echo "- **Organization webhooks with SSL verification disabled: $webhooks_insecure_ssl.** Payloads are deliverable to an interceptor (SC-8)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$apps_with_write" -gt 0 ]; then
+    echo "- **Installed GitHub Apps with write access: $apps_with_write.** Each is a supplier holding commit rights and needs a documented assessment (SR-6, AC-6)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$org_owners" -gt 5 ]; then
+    echo "- **Organization owners: $org_owners.** Owner access cannot be scoped down, so review whether all of them need it (AC-6)." >> "$REPORT_FILE"
+    any=true
+  fi
+
+  if [ "$any" != "true" ]; then
+    echo "None detected." >> "$REPORT_FILE"
+  fi
+}
+
+# Generate SOC2 report
+generate_soc2_report() {
+  report_header "GitHub SOC 2 Type II Compliance Report"
+
+  cat >> "$REPORT_FILE" << EOF
 ### SOC 2 Trust Service Criteria (TSC) Assessment
 
 #### Security (Common Criteria)
 
 | Criteria | Description | Status | Evidence |
 |----------|-------------|--------|----------|
-| CC6.1 | Logical and Physical Access Controls | $([ "$two_factor_required" = "true" ] && [ $protected_percentage -gt 90 ] && echo "✓" || echo "✗") | 2FA: $two_factor_required, Branch Protection: $protected_percentage% |
-| CC6.2 | Prior to Issuing System Credentials | $([ "$has_security_managers" = "Yes" ] && echo "✓" || echo "✗") | Security managers configured |
-| CC6.3 | Role-Based Access Control | $([ $codeowners_percentage -gt 90 ] && echo "✓" || echo "⚠") | CODEOWNERS: $codeowners_percentage% |
-| CC6.6 | Logical Access Security Measures | $([ "$ghas_enabled" = "true" ] && echo "✓" || echo "✗") | GHAS enabled: $ghas_enabled |
-| CC6.7 | System User Authentication | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | Multi-factor authentication enforced |
-| CC6.8 | System Component Removal | $([ $protected_percentage -gt 90 ] && echo "✓" || echo "⚠") | Access controls in place |
+| CC6.1 | Logical and Physical Access Controls | $(status_for "$protected_percentage" 90) | Branch protection or ruleset: $protected_percentage% |
+| CC6.2 | Prior to Issuing System Credentials | $(bool_status "$has_security_managers") | Security managers assigned: $security_managers_count |
+| CC6.3 | Role-Based Access Control | $(status_for "$codeowners_percentage" 90) | CODEOWNERS: $codeowners_percentage% |
+| CC6.6 | Logical Access Security Measures | $(status_for "$ghas_percentage" 90) | Code scanning coverage: $ghas_percentage% |
+| CC6.7 | System User Authentication | $(bool_status "$two_factor_required") | Organization 2FA requirement: $two_factor_required |
+| CC6.8 | Unauthorised Software Prevention | $(status_for "$pinning_percentage" 90) | Actions pinned to a commit SHA: $pinning_percentage% |
 
 #### System Operations
 
 | Criteria | Description | Status | Evidence |
 |----------|-------------|--------|----------|
-| CC7.1 | Detection and Monitoring | $([ $total_secret_scanning_alerts -lt 5 ] && echo "✓" || echo "⚠") | Secret scanning: $total_secret_scanning_alerts alerts |
-| CC7.2 | System Monitoring | $([ "$ghas_enabled" = "true" ] && echo "✓" || echo "⚠") | Continuous monitoring enabled |
-| CC7.3 | Evaluating Security Events | $([ -f "$OUTPUT_DIR/org_security/audit_log_sample.json" ] && echo "✓" || echo "✗") | Audit logging configured |
-| CC7.4 | Responding to Security Incidents | $([ -f "$OUTPUT_DIR/org_security/security_policy.json" ] && ! grep -q '"error"' "$OUTPUT_DIR/org_security/security_policy.json" && echo "✓" || echo "⚠") | Security policy exists |
+| CC7.1 | Detection and Monitoring | $(status_for "$secret_scanning_percentage" 90) | Secret scanning coverage: $secret_scanning_percentage%, $total_secret_scanning_alerts open alerts |
+| CC7.2 | System Monitoring | $(status_for "$ghas_percentage" 90) | Code scanning coverage: $ghas_percentage% |
+| CC7.3 | Evaluating Security Events | $(evidence_status "$audit_log_available" "$audit_log_available") | Audit log readable: $audit_log_available |
+| CC7.4 | Responding to Security Incidents | $(bool_status "$org_security_policy") | Organization SECURITY.md published: $org_security_policy |
+| CC8.1 | Change Management | $(status_for "$review_percentage" 90) | Required review with code owners: $review_percentage% |
 
 ### Compliance Gaps
 
@@ -686,15 +1333,17 @@ EOF
 
   # Add SOC2-specific gaps
   [ "$two_factor_required" != "true" ] && echo "- **CC6.7**: Enable mandatory 2FA for all users" >> "$REPORT_FILE"
-  [ $protected_percentage -lt 90 ] && echo "- **CC6.1**: Increase branch protection coverage to 90%+ (currently $protected_percentage%)" >> "$REPORT_FILE"
-  [ $codeowners_percentage -lt 90 ] && echo "- **CC6.3**: Implement CODEOWNERS in 90%+ of repositories (currently $codeowners_percentage%)" >> "$REPORT_FILE"
-  
+  [ "$protected_percentage" -lt 90 ] && echo "- **CC6.1**: Increase branch protection coverage to 90%+ (currently $protected_percentage%)" >> "$REPORT_FILE"
+  [ "$codeowners_percentage" -lt 90 ] && echo "- **CC6.3**: Implement CODEOWNERS in 90%+ of repositories (currently $codeowners_percentage%)" >> "$REPORT_FILE"
+  [ "$review_percentage" -lt 90 ] && echo "- **CC8.1**: Require code owner review on protected branches (currently $review_percentage%)" >> "$REPORT_FILE"
+  [ "$past_due_alerts" -gt 0 ] && echo "- **CC7.1**: $past_due_alerts findings are past their remediation window" >> "$REPORT_FILE"
+
   cat >> "$REPORT_FILE" << EOF
 
 ### Recommendations
 
 1. **Access Control**: Achieve 100% 2FA enforcement and 95%+ branch protection
-2. **Monitoring**: Enable GHAS and configure comprehensive audit log retention
+2. **Monitoring**: Enable code and secret scanning everywhere, and stream audit logs to retained storage
 3. **Incident Response**: Document and test security incident procedures
 4. **Change Management**: Implement repository rulesets for all critical repositories
 
@@ -703,39 +1352,36 @@ EOF
 
 # Generate HIPAA report
 generate_hipaa_report() {
-  cat > "$REPORT_FILE" << EOF
-# GitHub HIPAA Security Rule Compliance Report for $ORG_NAME
-## Generated on $(date)
+  report_header "GitHub HIPAA Security Rule Compliance Report"
 
-## Executive Summary
-
-**Organization**: $ORG_NAME  
-**Total Repositories**: $total_repos  
-**Risk Score**: $risk_score/100 (lower is better)  
-**Compliance Level**: $compliance_level  
-
+  cat >> "$REPORT_FILE" << EOF
 ### HIPAA Security Rule Assessment
+
+> The Security Rule governs ePHI. GitHub is in scope as a system that supports
+> applications handling ePHI; it is not itself a covered data store unless ePHI
+> has been committed to a repository. Confirm scope before relying on this table.
 
 #### Administrative Safeguards (45 CFR § 164.308)
 
 | Standard | Implementation Specification | Status | Evidence |
 |----------|----------------------------|--------|----------|
-| 164.308(a)(1) | Risk Analysis | $([ "$ghas_enabled" = "true" ] && echo "✓" || echo "✗") | Security scanning: $ghas_enabled |
-| 164.308(a)(1) | Risk Management | $([ $total_dependabot_alerts -lt 20 ] && echo "✓" || echo "⚠") | Vulnerability alerts: $total_dependabot_alerts |
-| 164.308(a)(3) | Workforce Security | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | 2FA enforcement: $two_factor_required |
-| 164.308(a)(4) | Access Management | $([ $protected_percentage -eq 100 ] && echo "✓" || echo "✗") | Branch protection: $protected_percentage% |
-| 164.308(a)(5) | Security Training | $([ -f "$OUTPUT_DIR/org_security/security_policy.json" ] && ! grep -q '"error"' "$OUTPUT_DIR/org_security/security_policy.json" && echo "✓" || echo "⚠") | Security policy documented |
+| 164.308(a)(1)(ii)(A) | Risk Analysis | $(status_for "$ghas_percentage" 100) | Code scanning coverage: $ghas_percentage% |
+| 164.308(a)(1)(ii)(B) | Risk Management | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") | $total_dependabot_alerts open dependency alerts, $past_due_alerts past due |
+| 164.308(a)(3) | Workforce Security | $(bool_status "$two_factor_required") | 2FA enforcement: $two_factor_required |
+| 164.308(a)(4) | Information Access Management | $(status_for "$protected_percentage" 100) | Branch protection or ruleset: $protected_percentage% |
+| 164.308(a)(5) | Security Awareness and Training | $(bool_status "$org_security_policy") | Organization SECURITY.md published: $org_security_policy |
+| 164.308(a)(6) | Security Incident Procedures | $(bool_status "$org_security_policy") | Documented reporting path |
 
 #### Technical Safeguards (45 CFR § 164.312)
 
 | Standard | Implementation Specification | Status | Evidence |
 |----------|----------------------------|--------|----------|
-| 164.312(a)(1) | Unique User Identification | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | User authentication enforced |
-| 164.312(a)(2) | Automatic Logoff | N/A | GitHub session management |
-| 164.312(a)(2) | Encryption and Decryption | ✓ | GitHub uses encryption in transit/at rest |
-| 164.312(b) | Audit Controls | $([ -f "$OUTPUT_DIR/org_security/audit_log_sample.json" ] && echo "✓" || echo "✗") | Audit logging enabled |
-| 164.312(c) | Integrity Controls | $([ $signing_percentage -gt 95 ] && echo "✓" || echo "✗") | Artifact signing: $signing_percentage% |
-| 164.312(e) | Transmission Security | ✓ | HTTPS enforced by GitHub |
+| 164.312(a)(1) | Access Control | $(status_for "$protected_percentage" 100) | Branch protection or ruleset: $protected_percentage% |
+| 164.312(a)(2)(i) | Unique User Identification | $(bool_status "$two_factor_required") | 2FA enforced for all members |
+| 164.312(a)(2)(iv) | Encryption and Decryption | ✓ | Provided by GitHub (encryption at rest) |
+| 164.312(b) | Audit Controls | $(evidence_status "$audit_log_available" "$audit_log_available") | Audit log readable: $audit_log_available |
+| 164.312(c)(1) | Integrity | $(status_for "$signing_percentage" 95) | Artifact signing or attestation: $signing_percentage% |
+| 164.312(e)(1) | Transmission Security | ✓ | Provided by GitHub (TLS in transit) |
 
 ### Critical HIPAA Gaps
 
@@ -743,16 +1389,18 @@ EOF
 
   # HIPAA requires 100% compliance for certain controls
   [ "$two_factor_required" != "true" ] && echo "- **CRITICAL**: Enable mandatory 2FA (164.308(a)(3))" >> "$REPORT_FILE"
-  [ $protected_percentage -lt 100 ] && echo "- **CRITICAL**: Achieve 100% branch protection (164.308(a)(4))" >> "$REPORT_FILE"
-  [ $signing_percentage -lt 95 ] && echo "- **CRITICAL**: Implement artifact signing for integrity (164.312(c))" >> "$REPORT_FILE"
-  
+  [ "$protected_percentage" -lt 100 ] && echo "- **CRITICAL**: Achieve 100% branch protection (164.308(a)(4))" >> "$REPORT_FILE"
+  [ "$signing_percentage" -lt 95 ] && echo "- **CRITICAL**: Implement artifact signing for integrity (164.312(c))" >> "$REPORT_FILE"
+  [ "$audit_log_available" != "true" ] && echo "- **CRITICAL**: Obtain and retain organization audit logs (164.312(b))" >> "$REPORT_FILE"
+  [ "$alerts_not_visible" -gt 0 ] && echo "- **CRITICAL**: $alerts_not_visible repositories have no vulnerability visibility (164.308(a)(1)(ii)(A))" >> "$REPORT_FILE"
+
   cat >> "$REPORT_FILE" << EOF
 
 ### Required Actions for HIPAA Compliance
 
 1. **Immediate**: Enable 2FA and achieve 100% branch protection
-2. **Within 30 days**: Implement comprehensive audit logging with retention
-3. **Within 60 days**: Deploy artifact signing and integrity controls
+2. **Next**: Implement comprehensive audit logging with a defined retention period
+3. **Then**: Deploy artifact signing and integrity controls
 4. **Ongoing**: Regular risk assessments and workforce training
 
 EOF
@@ -760,74 +1408,61 @@ EOF
 
 # Generate ISO 27001 report
 generate_iso27001_report() {
-  cat > "$REPORT_FILE" << EOF
-# GitHub ISO 27001:2022 Compliance Report for $ORG_NAME
-## Generated on $(date)
+  report_header "GitHub ISO 27001:2022 Compliance Report"
 
-## Executive Summary
+  cat >> "$REPORT_FILE" << EOF
+### ISO 27001:2022 Annex A Controls Assessment
 
-**Organization**: $ORG_NAME  
-**Total Repositories**: $total_repos  
-**Risk Score**: $risk_score/100 (lower is better)  
-**Compliance Level**: $compliance_level  
-
-### ISO 27001 Annex A Controls Assessment
+> Annex A was renumbered in the 2022 revision. The identifiers below follow
+> ISO/IEC 27001:2022, not the 2013 A.5-A.18 structure.
 
 #### A.5 - Organizational Controls
 
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|----------|
-| A.5.1 | Policies for information security | $([ -f "$OUTPUT_DIR/org_security/security_policy.json" ] && ! grep -q '"error"' "$OUTPUT_DIR/org_security/security_policy.json" && echo "✓" || echo "⚠") | Security policy exists |
-| A.5.2 | Information security roles | $([ "$has_security_managers" = "Yes" ] && echo "✓" || echo "✗") | Security managers: $has_security_managers |
+| A.5.1 | Policies for information security | $(bool_status "$org_security_policy") | Organization SECURITY.md published: $org_security_policy |
+| A.5.2 | Information security roles and responsibilities | $(bool_status "$has_security_managers") | Security managers assigned: $security_managers_count |
+| A.5.9 | Inventory of information and other associated assets | ✓ | $total_repos repositories inventoried in this evidence set |
+| A.5.15 | Access control | $(status_for "$protected_percentage" 80) | Branch protection or ruleset: $protected_percentage% |
+| A.5.17 | Authentication information | $(bool_status "$two_factor_required") | 2FA required: $two_factor_required |
 
-#### A.8 - Asset Management
-
-| Control | Description | Status | Evidence |
-|---------|-------------|--------|----------|
-| A.8.1 | Inventory of assets | ✓ | Repository inventory maintained |
-| A.8.2 | Ownership of assets | $([ $codeowners_percentage -gt 80 ] && echo "✓" || echo "⚠") | CODEOWNERS: $codeowners_percentage% |
-
-#### A.9 - Access Control
+#### A.8 - Technological Controls
 
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|----------|
-| A.9.1 | Access control policy | $([ $protected_percentage -gt 80 ] && echo "✓" || echo "⚠") | Branch protection: $protected_percentage% |
-| A.9.2 | User access management | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | 2FA required: $two_factor_required |
-| A.9.3 | User responsibilities | $([ $codeowners_percentage -gt 50 ] && echo "✓" || echo "⚠") | Defined in CODEOWNERS |
-| A.9.4 | System access control | $([ "$ghas_enabled" = "true" ] && echo "✓" || echo "⚠") | Advanced security controls |
-
-#### A.12 - Operations Security
-
-| Control | Description | Status | Evidence |
-|---------|-------------|--------|----------|
-| A.12.1 | Operational procedures | $([ $rulesets_percentage -gt 50 ] && echo "✓" || echo "⚠") | Repository rulesets: $rulesets_percentage% |
-| A.12.2 | Protection from malware | $([ $total_code_scanning_alerts -lt 50 ] && echo "✓" || echo "⚠") | Code scanning: $total_code_scanning_alerts alerts |
-| A.12.6 | Vulnerability management | $([ $total_dependabot_alerts -lt 50 ] && echo "✓" || echo "⚠") | Dependabot alerts: $total_dependabot_alerts |
+| A.8.2 | Privileged access rights | $(status_for "$codeowners_percentage" 80) | CODEOWNERS: $codeowners_percentage% |
+| A.8.8 | Management of technical vulnerabilities | $(status_for "$ghas_percentage" 80) | Code scanning: $ghas_percentage%, $total_dependabot_alerts open dependency alerts, $past_due_alerts past due |
+| A.8.15 | Logging | $(evidence_status "$audit_log_available" "$audit_log_available") | Audit log readable: $audit_log_available |
+| A.8.25 | Secure development life cycle | $(status_for "$review_percentage" 80) | Required review with code owners: $review_percentage% |
+| A.8.28 | Secure coding | $(status_for "$pinning_percentage" 80) | Actions pinned to a commit SHA: $pinning_percentage% |
+| A.8.30 | Outsourced development | $(status_for "$sbom_percentage" 60) | SBOM generation: $sbom_percentage% |
+| A.8.32 | Change management | $(status_for "$rulesets_percentage" 50) | Repository rulesets: $rulesets_percentage% |
 
 ### ISO 27001 Compliance Gaps
 
 EOF
 
   # Add ISO 27001 specific gaps
-  [ "$two_factor_required" != "true" ] && echo "- **A.9.2**: Enable mandatory 2FA" >> "$REPORT_FILE"
-  [ $protected_percentage -lt 80 ] && echo "- **A.9.1**: Increase branch protection to 80%+ (currently $protected_percentage%)" >> "$REPORT_FILE"
-  [ $sbom_percentage -lt 60 ] && echo "- **A.12.1**: Implement SBOM generation (currently $sbom_percentage%)" >> "$REPORT_FILE"
-  
+  [ "$two_factor_required" != "true" ] && echo "- **A.5.17**: Enable mandatory 2FA" >> "$REPORT_FILE"
+  [ "$protected_percentage" -lt 80 ] && echo "- **A.5.15**: Increase branch protection to 80%+ (currently $protected_percentage%)" >> "$REPORT_FILE"
+  [ "$sbom_percentage" -lt 60 ] && echo "- **A.8.30**: Implement SBOM generation (currently $sbom_percentage%)" >> "$REPORT_FILE"
+  [ "$pinning_percentage" -lt 80 ] && echo "- **A.8.28**: Pin third-party Actions to commit SHAs (currently $pinning_percentage%)" >> "$REPORT_FILE"
+
   cat >> "$REPORT_FILE" << EOF
 
 ### ISO 27001 Implementation Roadmap
 
-1. **Phase 1 (1-3 months)**: Establish ISMS foundation
+1. **Establish the ISMS foundation**
    - Enable 2FA and branch protection
    - Document security policies and procedures
    - Assign security roles and responsibilities
 
-2. **Phase 2 (3-6 months)**: Implement technical controls
-   - Deploy GHAS across all repositories
-   - Configure vulnerability management
+2. **Implement technical controls**
+   - Deploy code and secret scanning across all repositories
+   - Configure vulnerability management with defined remediation windows
    - Establish incident response procedures
 
-3. **Phase 3 (6-12 months)**: Continuous improvement
+3. **Continuous improvement**
    - Regular security assessments
    - Metrics and KPI tracking
    - Internal audit program
@@ -837,75 +1472,71 @@ EOF
 
 # Generate PCI-DSS report
 generate_pcidss_report() {
-  cat > "$REPORT_FILE" << EOF
-# GitHub PCI-DSS v4.0 Compliance Report for $ORG_NAME
-## Generated on $(date)
+  report_header "GitHub PCI-DSS v4.0.1 Compliance Report"
 
-## Executive Summary
+  cat >> "$REPORT_FILE" << EOF
+### PCI-DSS v4.0.1 Requirements Assessment
 
-**Organization**: $ORG_NAME  
-**Total Repositories**: $total_repos  
-**Risk Score**: $risk_score/100 (lower is better)  
-**Compliance Level**: $compliance_level  
+> Only the requirements that a source control platform can evidence are listed.
+> Requirements 1-4 are largely network and cardholder data controls that GitHub
+> does not implement on your behalf; they are excluded rather than auto-passed.
 
-### PCI-DSS Requirements Assessment
-
-#### Requirement 1-2: Network Security Controls
+#### Requirement 6: Develop and Maintain Secure Systems and Software
 
 | Requirement | Description | Status | Evidence |
 |-------------|-------------|--------|----------|
-| 1.2.1 | Restrict inbound/outbound traffic | $([ $protected_percentage -eq 100 ] && echo "✓" || echo "✗") | Access controls: $protected_percentage% |
-| 2.2.1 | Configuration standards | $([ $rulesets_percentage -gt 90 ] && echo "✓" || echo "⚠") | Repository rulesets: $rulesets_percentage% |
+| 6.2.1 | Software developed securely | $(status_for "$ghas_percentage" 100) | Code scanning coverage: $ghas_percentage% |
+| 6.2.4 | Prevention of common coding vulnerabilities | $(evidence_status true "$([ "$code_scanning_critical" -eq 0 ] && [ "$code_scanning_high" -eq 0 ] && echo true || echo false)") | Open code scanning: $code_scanning_critical critical, $code_scanning_high high |
+| 6.3.1 | Security vulnerabilities identified and managed | $(evidence_status "$([ "$alerts_not_visible" -eq 0 ] && echo true || echo false)" "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") | $total_dependabot_alerts open ($dependabot_critical critical, $dependabot_high high), $past_due_alerts past due |
+| 6.3.2 | Inventory of bespoke and third-party software | $(status_for "$sbom_percentage" 100) | SBOM generation: $sbom_percentage% |
+| 6.3.3 | Security patches installed | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") | $past_due_alerts findings past their remediation window |
+| 6.5.1 | Change control procedures | $(status_for "$review_percentage" 100) | Required review with code owners: $review_percentage% |
 
-#### Requirement 3-4: Protect Stored Data
-
-| Requirement | Description | Status | Evidence |
-|-------------|-------------|--------|----------|
-| 3.4.1 | Strong cryptography | ✓ | GitHub encryption enabled |
-| 4.1.1 | Strong cryptography in transit | ✓ | HTTPS enforced |
-
-#### Requirement 6: Secure Development
+#### Requirement 7-8: Access Control and Authentication
 
 | Requirement | Description | Status | Evidence |
 |-------------|-------------|--------|----------|
-| 6.2.1 | Secure development process | $([ "$ghas_enabled" = "true" ] && echo "✓" || echo "✗") | GHAS: $ghas_enabled |
-| 6.3.1 | Security vulnerabilities addressed | $([ $total_dependabot_alerts -eq 0 ] && echo "✓" || echo "✗") | Open vulnerabilities: $total_dependabot_alerts |
-| 6.3.2 | Code review | $([ $protected_percentage -eq 100 ] && echo "✓" || echo "✗") | PR reviews enforced: $protected_percentage% |
-| 6.5.1 | Secure coding training | $([ -f "$OUTPUT_DIR/org_security/security_policy.json" ] && ! grep -q '"error"' "$OUTPUT_DIR/org_security/security_policy.json" && echo "✓" || echo "⚠") | Security guidelines documented |
+| 7.2.1 | Access control model defined | $(status_for "$codeowners_percentage" 100) | CODEOWNERS: $codeowners_percentage% |
+| 7.2.5 | Application and system accounts managed | $(bool_status "$has_security_managers") | Security managers assigned: $security_managers_count |
+| 8.3.1 | Strong authentication for all access | $(bool_status "$two_factor_required") | MFA enforced: $two_factor_required |
+| 8.4.2 | MFA for all access into the CDE | $(bool_status "$two_factor_required") | Organization-wide 2FA requirement |
 
-#### Requirement 7-8: Access Control
-
-| Requirement | Description | Status | Evidence |
-|-------------|-------------|--------|----------|
-| 7.1.1 | Access control policy | $([ $codeowners_percentage -eq 100 ] && echo "✓" || echo "✗") | CODEOWNERS: $codeowners_percentage% |
-| 8.3.1 | Strong authentication | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | MFA enforced: $two_factor_required |
-
-#### Requirement 10: Logging and Monitoring
+#### Requirement 10: Log and Monitor All Access
 
 | Requirement | Description | Status | Evidence |
 |-------------|-------------|--------|----------|
-| 10.2.1 | Audit logs implemented | $([ -f "$OUTPUT_DIR/org_security/audit_log_sample.json" ] && echo "✓" || echo "✗") | Audit logging enabled |
-| 10.3.1 | Audit log protection | $([ $protected_percentage -eq 100 ] && echo "✓" || echo "✗") | Access controls in place |
+| 10.2.1 | Audit logs enabled and active | $(evidence_status "$audit_log_available" "$audit_log_available") | Audit log readable: $audit_log_available |
+| 10.3.2 | Audit logs protected from modification | $(evidence_status "$audit_log_available" "$audit_log_available") | GitHub-managed, immutable to org members |
+| 10.5.1 | Audit log history retained | ? | Retention depends on log streaming configuration; verify manually |
 
-### PCI-DSS v4.0 Critical Failures
+#### Requirement 11-12: Testing and Policy
+
+| Requirement | Description | Status | Evidence |
+|-------------|-------------|--------|----------|
+| 11.3.1 | Internal vulnerability scans | $(status_for "$ghas_percentage" 100) | Code scanning coverage: $ghas_percentage% |
+| 12.1.1 | Information security policy maintained | $(bool_status "$org_security_policy") | Organization SECURITY.md published: $org_security_policy |
+| 12.10.1 | Incident response plan exists | $(bool_status "$org_security_policy") | Documented reporting path |
+
+### PCI-DSS v4.0.1 Critical Failures
 
 EOF
 
   # PCI-DSS has zero tolerance for certain requirements
   [ "$two_factor_required" != "true" ] && echo "- **FAIL - Req 8.3.1**: MFA not enforced" >> "$REPORT_FILE"
-  [ $protected_percentage -lt 100 ] && echo "- **FAIL - Req 6.3.2**: Code review not enforced on all repos" >> "$REPORT_FILE"
-  [ $total_dependabot_alerts -gt 0 ] && echo "- **FAIL - Req 6.3.1**: $total_dependabot_alerts unresolved vulnerabilities" >> "$REPORT_FILE"
-  [ "$ghas_enabled" != "true" ] && echo "- **FAIL - Req 6.2.1**: Secure development tools not enabled" >> "$REPORT_FILE"
-  
+  [ "$review_percentage" -lt 100 ] && echo "- **FAIL - Req 6.5.1**: Code owner review not enforced on all repositories (currently $review_percentage%)" >> "$REPORT_FILE"
+  [ "$past_due_alerts" -gt 0 ] && echo "- **FAIL - Req 6.3.3**: $past_due_alerts findings past their remediation window" >> "$REPORT_FILE"
+  [ "$ghas_percentage" -lt 100 ] && echo "- **FAIL - Req 6.2.1**: Code scanning not enabled on all repositories (currently $ghas_percentage%)" >> "$REPORT_FILE"
+  [ "$alerts_not_visible" -gt 0 ] && echo "- **UNKNOWN - Req 6.3.1**: $alerts_not_visible repositories provided no vulnerability data" >> "$REPORT_FILE"
+
   cat >> "$REPORT_FILE" << EOF
 
 ### Required for PCI-DSS Compliance
 
 1. **IMMEDIATE ACTION REQUIRED**:
    - Enable mandatory 2FA for all users
-   - Achieve 100% branch protection with code review
-   - Resolve all security vulnerabilities
-   - Enable GitHub Advanced Security
+   - Achieve 100% branch protection with enforced code review
+   - Remediate findings within their defined windows
+   - Enable code and secret scanning across the cardholder data environment
 
 2. **Customized Approach Considerations**:
    - Document compensating controls
@@ -918,7 +1549,7 @@ EOF
 # Generate framework-specific report
 generate_framework_report() {
   local framework="$1"
-  
+
   case "$framework" in
     "fedramp"|"nist")
       generate_fedramp_nist_report
@@ -940,115 +1571,160 @@ generate_framework_report() {
 
 # Generate combined report for all frameworks
 generate_combined_report() {
-  cat > "$REPORT_FILE" << EOF
-# GitHub Multi-Framework Compliance Report for $ORG_NAME
-## Generated on $(date)
+  report_header "GitHub Multi-Framework Compliance Report"
 
-## Executive Summary
+  cat >> "$REPORT_FILE" << EOF
+### Framework Readiness Summary
 
-**Organization**: $ORG_NAME  
-**Total Repositories**: $total_repos  
-**Risk Score**: $risk_score/100 (lower is better)  
-**Overall Compliance Level**: $compliance_level  
+Readiness reflects only the configuration signals this tool can measure. It is an
+input to an assessment, never a substitute for one.
 
-### Framework Compliance Summary
-
-| Framework | Compliance Status | Key Gaps | Recommended Actions |
-|-----------|------------------|----------|-------------------|
-| FedRAMP/NIST | $([ $protected_percentage -gt 80 ] && [ "$two_factor_required" = "true" ] && echo "✓ Compliant" || echo "⚠ Gaps Identified") | $([ "$two_factor_required" != "true" ] && echo "2FA, " || echo "")$([ $protected_percentage -lt 80 ] && echo "Branch Protection" || echo "None") | See detailed assessment |
-| SOC 2 | $([ $protected_percentage -gt 90 ] && [ "$two_factor_required" = "true" ] && echo "✓ Compliant" || echo "⚠ Gaps Identified") | $([ $protected_percentage -lt 90 ] && echo "90%+ coverage needed" || echo "Minor gaps") | Focus on monitoring |
-| HIPAA | $([ $protected_percentage -eq 100 ] && [ "$two_factor_required" = "true" ] && echo "✓ Compliant" || echo "✗ Non-Compliant") | $([ $protected_percentage -lt 100 ] && echo "100% protection required" || echo "Audit controls") | Immediate action required |
-| ISO 27001 | $([ $protected_percentage -gt 80 ] && [ "$two_factor_required" = "true" ] && echo "✓ Ready for Certification" || echo "⚠ Preparation Needed") | Documentation gaps | Implement ISMS |
-| PCI-DSS | $([ $protected_percentage -eq 100 ] && [ "$two_factor_required" = "true" ] && [ $total_dependabot_alerts -eq 0 ] && echo "✓ Compliant" || echo "✗ Non-Compliant") | $([ $total_dependabot_alerts -gt 0 ] && echo "$total_dependabot_alerts vulnerabilities" || echo "Access controls") | Critical remediation |
+| Framework | Branch protection | Review enforcement | Scanning | Overdue findings | Readiness |
+|-----------|-------------------|--------------------|----------|------------------|-----------|
+| FedRAMP / NIST | $(status_for "$protected_percentage" 80) $protected_percentage% | $(status_for "$review_percentage" 80) $review_percentage% | $(status_for "$ghas_percentage" 80) $ghas_percentage% | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") $past_due_alerts | $(framework_readiness 80 80 80) |
+| SOC 2 | $(status_for "$protected_percentage" 90) $protected_percentage% | $(status_for "$review_percentage" 90) $review_percentage% | $(status_for "$ghas_percentage" 90) $ghas_percentage% | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") $past_due_alerts | $(framework_readiness 90 90 90) |
+| HIPAA | $(status_for "$protected_percentage" 100) $protected_percentage% | $(status_for "$review_percentage" 100) $review_percentage% | $(status_for "$ghas_percentage" 100) $ghas_percentage% | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") $past_due_alerts | $(framework_readiness 100 100 100) |
+| ISO 27001 | $(status_for "$protected_percentage" 80) $protected_percentage% | $(status_for "$review_percentage" 80) $review_percentage% | $(status_for "$ghas_percentage" 80) $ghas_percentage% | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") $past_due_alerts | $(framework_readiness 80 80 80) |
+| PCI-DSS | $(status_for "$protected_percentage" 100) $protected_percentage% | $(status_for "$review_percentage" 100) $review_percentage% | $(status_for "$ghas_percentage" 100) $ghas_percentage% | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") $past_due_alerts | $(framework_readiness 100 100 100) |
 
 ### Universal Security Controls Assessment
 
-| Control Area | Current State | FedRAMP | SOC2 | HIPAA | ISO 27001 | PCI-DSS |
-|-------------|--------------|---------|------|-------|-----------|---------|
-| Multi-Factor Auth | $two_factor_required | Required | Required | Required | Required | Required |
-| Branch Protection | $protected_percentage% | 80%+ | 90%+ | 100% | 80%+ | 100% |
-| Vulnerability Mgmt | $total_dependabot_alerts alerts | <100 | <50 | <20 | <50 | 0 |
-| Code Scanning | $([ "$ghas_enabled" = "true" ] && echo "Enabled" || echo "Disabled") | Recommended | Required | Required | Recommended | Required |
-| Audit Logging | $([ -f "$OUTPUT_DIR/org_security/audit_log_sample.json" ] && echo "Enabled" || echo "Disabled") | Required | Required | Required | Required | Required |
-| SBOM Generation | $sbom_percentage% | 50%+ | N/A | N/A | 60%+ | Recommended |
-| Artifact Signing | $signing_percentage% | 50%+ | N/A | 95%+ | Recommended | Recommended |
+| Control Area | Current State | FedRAMP | SOC 2 | HIPAA | ISO 27001 | PCI-DSS |
+|-------------|--------------|---------|-------|-------|-----------|---------|
+| Multi-factor authentication | $two_factor_required | Required | Required | Required | Required | Required |
+| Branch protection or ruleset | $protected_percentage% | 80%+ | 90%+ | 100% | 80%+ | 100% |
+| Code owner review required | $review_percentage% | 80%+ | 90%+ | 100% | 80%+ | 100% |
+| Code scanning coverage | $ghas_percentage% | Required | Required | Required | Required | Required |
+| Secret scanning push protection | $push_protection_percentage% | Required | Required | Required | Required | Required |
+| Open findings past due | $past_due_alerts | 0 | 0 | 0 | 0 | 0 |
+| Audit log accessible | $audit_log_available | Required | Required | Required | Required | Required |
+| Actions pinned to a commit SHA | $pinning_percentage% | 80%+ | Recommended | Recommended | 80%+ | Recommended |
+| Read-only default workflow token | $read_only_token_percentage% | 100% | Recommended | Recommended | 100% | 100% |
+| Workflows with explicit permissions | $workflow_permissions_percentage% | 80%+ | Recommended | Recommended | 80%+ | Recommended |
+| Third-party Action policy restricted | $restricted_actions_percentage% | Required | Recommended | Recommended | Required | Required |
+| SBOM generation | $sbom_percentage% | 50%+ | N/A | N/A | 60%+ | Required (6.3.2) |
+| Artifact signing or attestation | $signing_percentage% | 50%+ | N/A | 95%+ | Recommended | Recommended |
+
+### Open findings
+
+| Source | Open | Critical | High | Past due | Repositories with no visibility |
+|--------|------|----------|------|----------|---------------------------------|
+| Dependabot | $total_dependabot_alerts | $dependabot_critical | $dependabot_high | $(read_summary '.alerts.dependabot.past_due') | $(read_summary '.alerts.dependabot.repos_without_visibility') |
+| Code scanning | $total_code_scanning_alerts | $code_scanning_critical | $code_scanning_high | $(read_summary '.alerts.code_scanning.past_due') | $(read_summary '.alerts.code_scanning.repos_without_visibility') |
+| Secret scanning | $total_secret_scanning_alerts | - | $total_secret_scanning_alerts | $(read_summary '.alerts.secret_scanning.past_due') | $(read_summary '.alerts.secret_scanning.repos_without_visibility') |
+
+Remediation windows used: critical 15 days, high 30, medium 90, low 180.
 
 ### Critical Actions Required Across All Frameworks
 
-1. **Immediate (All Frameworks)**:
 EOF
 
   # Add universal critical actions
-  [ "$two_factor_required" != "true" ] && echo "   - ⚠️ **CRITICAL**: Enable mandatory 2FA organization-wide" >> "$REPORT_FILE"
-  [ "$ghas_enabled" != "true" ] && echo "   - ⚠️ **CRITICAL**: Enable GitHub Advanced Security" >> "$REPORT_FILE"
-  [ $protected_percentage -lt 80 ] && echo "   - ⚠️ **HIGH**: Increase branch protection to 80%+ minimum" >> "$REPORT_FILE"
-  
+  [ "$two_factor_required" != "true" ] && echo "- **CRITICAL**: Enable mandatory 2FA organization-wide" >> "$REPORT_FILE"
+  [ "$ghas_percentage" -lt 80 ] && echo "- **CRITICAL**: Enable code scanning (currently $ghas_percentage% of repositories)" >> "$REPORT_FILE"
+  [ "$push_protection_percentage" -lt 80 ] && echo "- **CRITICAL**: Enable secret scanning push protection (currently $push_protection_percentage%)" >> "$REPORT_FILE"
+  [ "$protected_percentage" -lt 80 ] && echo "- **HIGH**: Increase branch protection to 80%+ minimum (currently $protected_percentage%)" >> "$REPORT_FILE"
+  [ "$past_due_alerts" -gt 0 ] && echo "- **HIGH**: Remediate $past_due_alerts findings that are past their window" >> "$REPORT_FILE"
+  [ "$audit_log_available" != "true" ] && echo "- **HIGH**: Obtain organization audit log access and configure log streaming" >> "$REPORT_FILE"
+  [ "$pinning_percentage" -lt 80 ] && echo "- **MEDIUM**: Pin third-party Actions to commit SHAs (currently $pinning_percentage%)" >> "$REPORT_FILE"
+
   cat >> "$REPORT_FILE" << EOF
 
-2. **Framework-Specific Requirements**:
-   - **HIPAA**: Achieve 100% branch protection and resolve all vulnerabilities
-   - **PCI-DSS**: Zero tolerance for vulnerabilities, 100% code review required
-   - **SOC 2**: Implement comprehensive monitoring and incident response
-   - **ISO 27001**: Document ISMS and establish risk management processes
-   - **FedRAMP**: Implement continuous monitoring and supply chain controls
+### Score breakdown
+
+Every point below is attributable to a measured control. Total earned:
+$(read_summary '.score.points_earned')/100, giving a risk score of $risk_score.
+
+| Control | Points earned | Maximum |
+|---------|---------------|---------|
+| Multi-factor authentication | $(read_summary '.score.breakdown.two_factor') | 15 |
+| Branch protection coverage | $(read_summary '.score.breakdown.branch_protection') | 20 |
+| Review quality (code owners) | $(read_summary '.score.breakdown.review_quality') | 10 |
+| Secret scanning push protection | $(read_summary '.score.breakdown.secret_protection') | 15 |
+| Code scanning coverage | $(read_summary '.score.breakdown.code_scanning') | 10 |
+| Dependency monitoring | $(read_summary '.score.breakdown.dependency_monitoring') | 5 |
+| Remediation timeliness | $(read_summary '.score.breakdown.remediation_timeliness') | 10 |
+| Code ownership | $(read_summary '.score.breakdown.ownership') | 5 |
+| Workflow hardening (pinning, token scope) | $(read_summary '.score.breakdown.workflow_hardening') | 5 |
+| SBOM and provenance | $(read_summary '.score.breakdown.provenance') | 5 |
+
+### Organization access surface
+
+| | |
+|---|---|
+| Members | $org_members |
+| Owners | $org_owners |
+| Security managers | $security_managers_count |
+| Default repository permission | $(read_summary '.organization_controls.default_repository_permission') |
+| Organization rulesets | $(read_summary '.organization_controls.rulesets.total') ($(read_summary '.organization_controls.rulesets.active') active, inherited by $(read_summary '.counts.inherited_org_rulesets') repositories) |
+| Code security configurations | $(read_summary '.organization_controls.code_security_configurations.configurations') ($(read_summary '.organization_controls.code_security_configurations.enforced') enforced, default for new repositories: $(read_summary '.organization_controls.code_security_configurations.default_for_new_repos')) |
+| Installed GitHub Apps | $(read_summary '.organization_controls.github_apps.total') ($apps_with_write with write access, $(read_summary '.organization_controls.github_apps.all_repositories') scoped to all repositories) |
+| Organization webhooks | $(read_summary '.organization_controls.webhooks.total') ($webhooks_without_secret without a secret, $webhooks_insecure_ssl with SSL verification disabled) |
 
 ### Detailed Framework Assessments
 
-For detailed compliance requirements and gaps for each framework, generate individual reports:
-- FedRAMP/NIST: Run with 'fedramp' or 'nist' parameter
-- SOC 2: Run with 'soc2' parameter  
-- HIPAA: Run with 'hipaa' parameter
-- ISO 27001: Run with 'iso27001' parameter
-- PCI-DSS: Run with 'pci-dss' parameter
-
-### Risk Prioritization Matrix
-
-| Risk Level | Frameworks Affected | Required Action | Timeline |
-|-----------|-------------------|----------------|----------|
-| CRITICAL | All | Enable 2FA, GHAS | Immediate |
-| HIGH | HIPAA, PCI-DSS | 100% branch protection | 1 week |
-| MEDIUM | SOC2, ISO 27001 | Enhanced monitoring | 1 month |
-| LOW | FedRAMP | Supply chain security | 3 months |
+Re-run with a framework argument for the full control table:
+\`fedramp\`, \`nist\`, \`soc2\`, \`hipaa\`, \`iso27001\`, \`pci-dss\`.
 
 ### Audit Metadata
-- **Audit Date**: $(date)
-- **Total Repositories**: $total_repos
-- **Frameworks Assessed**: All (FedRAMP, NIST, SOC2, HIPAA, ISO 27001, PCI-DSS)
-- **Output Directory**: $OUTPUT_DIR
+
+- **Audit date**: $AUDIT_STARTED_AT (UTC)
+- **Tool version**: $AUDIT_TOOL_VERSION
+- **Repositories discovered / scored**: $total_repos / $scored_repos
+- **Machine-readable summary**: \`summary.json\`
+- **Evidence manifest**: \`evidence_manifest.txt\` (SHA-256 of every collected file)
+- **Output directory**: $OUTPUT_DIR
 
 EOF
 }
 
+# Coarse readiness verdict from the three coverage measures a framework leans on.
+framework_readiness() {
+  local protection_bar="$1" review_bar="$2" scanning_bar="$3"
+
+  if [ "$two_factor_required" = "true" ] &&
+     [ "$protected_percentage" -ge "$protection_bar" ] &&
+     [ "$review_percentage" -ge "$review_bar" ] &&
+     [ "$ghas_percentage" -ge "$scanning_bar" ] &&
+     [ "$past_due_alerts" -eq 0 ]; then
+    echo "Signals met"
+  else
+    echo "Gaps identified"
+  fi
+}
+
 # Generate FedRAMP/NIST report (original)
 generate_fedramp_nist_report() {
-cat > "$REPORT_FILE" << EOF
-# GitHub FedRAMP/NIST Compliance Report for $ORG_NAME
-## Generated on $(date)
+  report_header "GitHub FedRAMP / NIST Compliance Report"
 
-## Executive Summary
-
-**Organization**: $ORG_NAME  
-**Total Repositories**: $total_repos  
-**Risk Score**: $risk_score/100 (lower is better)  
-**Compliance Level**: $compliance_level  
-
+  cat >> "$REPORT_FILE" << EOF
 ### Key Security Metrics
 
-| Security Control | Status | Coverage |
-|-----------------|--------|----------|
-| Two-Factor Authentication | $two_factor_required | Organization-wide |
-| GitHub Advanced Security | $ghas_enabled | Organization-wide |
-| Branch Protection | Enabled | $protected_percentage% of repos |
-| Repository Rulesets | Configured | $rulesets_percentage% of repos |
-| CODEOWNERS Files | Present | $codeowners_percentage% of repos |
-| SBOM Generation | Implemented | $sbom_percentage% of repos |
-| Artifact Signing | Configured | $signing_percentage% of repos |
+| Security Control | Coverage |
+|-----------------|----------|
+| Two-factor authentication required | $two_factor_required (organization-wide) |
+| Branch protection or active ruleset | $protected_percentage% |
+| Required review with code owners | $review_percentage% |
+| Repository rulesets | $rulesets_percentage% |
+| Code scanning | $ghas_percentage% |
+| Secret scanning | $secret_scanning_percentage% |
+| Secret scanning push protection | $push_protection_percentage% |
+| CODEOWNERS present | $codeowners_percentage% |
+| Actions pinned to a commit SHA | $pinning_percentage% |
+| Read-only default workflow token | $read_only_token_percentage% |
+| Workflows with explicit permissions | $workflow_permissions_percentage% |
+| Third-party Action policy restricted | $restricted_actions_percentage% |
+| SBOM generation | $sbom_percentage% |
+| Artifact signing | $signing_percentage% |
+| Build provenance attestation | $attestation_percentage% |
 
-### Security Alerts Summary
+### Open Findings
 
-- **Dependabot Alerts**: $total_dependabot_alerts total
-- **Code Scanning Alerts**: $total_code_scanning_alerts total  
-- **Secret Scanning Alerts**: $total_secret_scanning_alerts total
+| Source | Open | Critical | High | Past due |
+|--------|------|----------|------|----------|
+| Dependabot | $total_dependabot_alerts | $dependabot_critical | $dependabot_high | $(read_summary '.alerts.dependabot.past_due') |
+| Code scanning | $total_code_scanning_alerts | $code_scanning_critical | $code_scanning_high | $(read_summary '.alerts.code_scanning.past_due') |
+| Secret scanning | $total_secret_scanning_alerts | - | $total_secret_scanning_alerts | $(read_summary '.alerts.secret_scanning.past_due') |
 
 ## Detailed Compliance Assessment
 
@@ -1057,116 +1733,134 @@ cat > "$REPORT_FILE" << EOF
 #### Access Control (AC) Family
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|-----------|
-| AC-2 | Account Management | $([ "$has_security_managers" = "Yes" ] && echo "✓" || echo "✗") | Security managers: $has_security_managers |
-| AC-2(1) | Automated Account Management | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | 2FA enforcement: $two_factor_required |
-| AC-3 | Access Enforcement | $([ $protected_percentage -gt 80 ] && echo "✓" || echo "⚠") | Branch protection: $protected_percentage% |
-| AC-6 | Least Privilege | $([ $codeowners_percentage -gt 50 ] && echo "✓" || echo "⚠") | CODEOWNERS: $codeowners_percentage% |
+| AC-2 | Account Management | $(bool_status "$has_security_managers") | Security managers assigned: $security_managers_count |
+| AC-3 | Access Enforcement | $(status_for "$protected_percentage" 80) | Branch protection or ruleset: $protected_percentage% |
+| AC-5 | Separation of Duties | $(status_for "$review_percentage" 80) | Code owner review required: $review_percentage% |
+| AC-6 | Least Privilege | $(status_for "$codeowners_percentage" 80) | CODEOWNERS: $codeowners_percentage% |
 
 #### Identification and Authentication (IA) Family
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|-----------|
-| IA-2 | Identification and Authentication | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | 2FA required: $two_factor_required |
-| IA-2(1) | Multi-factor Authentication | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "✗") | 2FA enforcement: $two_factor_required |
-| IA-5 | Authenticator Management | $([ "$two_factor_required" = "true" ] && echo "✓" || echo "⚠") | Strong authentication required |
+| IA-2 | Identification and Authentication | $(bool_status "$two_factor_required") | 2FA required: $two_factor_required |
+| IA-2(1) | Multi-factor Authentication | $(bool_status "$two_factor_required") | Organization-wide 2FA requirement |
+| IA-5 | Authenticator Management | $(bool_status "$two_factor_required") | Strong authentication required |
+
+#### Audit and Accountability (AU) Family
+| Control | Description | Status | Evidence |
+|---------|-------------|--------|-----------|
+| AU-2 | Event Logging | $(evidence_status "$audit_log_available" "$audit_log_available") | Audit log readable: $audit_log_available |
+| AU-9 | Protection of Audit Information | $(evidence_status "$audit_log_available" "$audit_log_available") | GitHub-managed audit log |
+| AU-11 | Audit Record Retention | ? | Depends on log streaming; verify manually |
 
 #### Risk Assessment (RA) Family
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|-----------|
-| RA-5 | Vulnerability Monitoring | $([ "$ghas_enabled" = "true" ] && echo "✓" || echo "⚠") | GHAS: $ghas_enabled, Alerts: $total_dependabot_alerts |
-| RA-5(2) | Update Vulnerabilities | $([ $total_dependabot_alerts -lt 50 ] && echo "✓" || echo "⚠") | Active vulnerability management |
+| RA-5 | Vulnerability Monitoring and Scanning | $(status_for "$ghas_percentage" 80) | Code scanning: $ghas_percentage%, $alerts_not_visible repositories with no visibility |
+| RA-5(2) | Update Vulnerabilities to Be Scanned | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") | $past_due_alerts findings past their remediation window |
 
 #### System and Information Integrity (SI) Family
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|-----------|
-| SI-2 | Flaw Remediation | $([ $total_dependabot_alerts -lt 100 ] && echo "✓" || echo "⚠") | Dependabot alerts: $total_dependabot_alerts |
-| SI-3 | Malicious Code Protection | $([ $total_code_scanning_alerts -lt 50 ] && echo "✓" || echo "⚠") | Code scanning alerts: $total_code_scanning_alerts |
-| SI-4 | System Monitoring | $([ $total_secret_scanning_alerts -lt 10 ] && echo "✓" || echo "⚠") | Secret scanning alerts: $total_secret_scanning_alerts |
+| SI-2 | Flaw Remediation | $(evidence_status true "$([ "$past_due_alerts" -eq 0 ] && echo true || echo false)") | $total_dependabot_alerts open dependency findings, $past_due_alerts past due |
+| SI-3 | Malicious Code Protection | $(status_for "$ghas_percentage" 80) | Code scanning coverage: $ghas_percentage% |
+| SI-4 | System Monitoring | $(status_for "$secret_scanning_percentage" 80) | Secret scanning coverage: $secret_scanning_percentage% |
+| SI-7 | Software, Firmware, and Information Integrity | $(status_for "$signing_percentage" 50) | Artifact signing: $signing_percentage% |
 
 #### Configuration Management (CM) Family
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|-----------|
-| CM-2 | Baseline Configuration | $([ $protected_percentage -gt 80 ] && echo "✓" || echo "⚠") | Protected branches: $protected_percentage% |
-| CM-3 | Configuration Change Control | $([ $rulesets_percentage -gt 50 ] && echo "✓" || echo "⚠") | Repository rulesets: $rulesets_percentage% |
-| CM-5 | Access Restrictions | $([ $protected_percentage -gt 80 ] && echo "✓" || echo "⚠") | Branch protection enforcement |
+| CM-2 | Baseline Configuration | $(status_for "$protected_percentage" 80) | Protected branches: $protected_percentage% |
+| CM-3 | Configuration Change Control | $(status_for "$rulesets_percentage" 50) | Rulesets on $rulesets_percentage% of repositories, $(read_summary '.organization_controls.rulesets.active') active organization rulesets |
+| CM-5 | Access Restrictions for Change | $(status_for "$review_percentage" 80) | Review enforcement: $review_percentage%, Actions can approve PRs in $actions_can_approve_prs repositories |
+| CM-7 | Least Functionality | $(status_for "$read_only_token_percentage" 100) | Read-only default workflow token: $read_only_token_percentage%, explicit workflow permissions: $workflow_permissions_percentage% |
 
 ### NIST SP 800-161 Rev 1 Update 1 Supply Chain Controls
 
 #### Supply Chain Risk Management (SR) Family
 | Control | Description | Status | Evidence |
 |---------|-------------|--------|-----------|
-| SR-3 | Supply Chain Controls | $([ $protected_percentage -gt 80 ] && echo "✓" || echo "⚠") | Development controls enforced |
-| SR-4 | Provenance | $([ $sbom_percentage -gt 50 ] && echo "✓" || echo "⚠") | SBOM generation: $sbom_percentage% |
-| SR-10 | Inspection of Systems | $([ "$ghas_enabled" = "true" ] && echo "✓" || echo "⚠") | Automated security scanning |
-| SR-11 | Component Authenticity | $([ $signing_percentage -gt 50 ] && echo "✓" || echo "⚠") | Artifact signing: $signing_percentage% |
+| SR-3 | Supply Chain Controls and Processes | $(status_for "$protected_percentage" 80) | Development controls enforced: $protected_percentage% |
+| SR-4 | Provenance | $(status_for "$sbom_percentage" 50) | SBOM generation: $sbom_percentage%, attestation: $attestation_percentage% |
+| SR-5 | Acquisition Strategies, Tools, and Methods | $(status_for "$pinning_percentage" 80) | Actions pinned to a commit SHA: $pinning_percentage%, third-party Action policy restricted: $restricted_actions_percentage% |
+| SR-6 | Supplier Assessments and Reviews | $(status_for "$restricted_actions_percentage" 100) | $apps_with_write installed Apps with write access |
+| SR-10 | Inspection of Systems or Components | $(status_for "$ghas_percentage" 80) | Automated scanning coverage: $ghas_percentage% |
+| SR-11 | Component Authenticity | $(status_for "$signing_percentage" 50) | Artifact signing: $signing_percentage% |
 
 ### Critical Findings and Recommendations
 
-#### 🔴 Critical Issues (Immediate Action Required)
+#### Critical issues (immediate action required)
 EOF
 
-# Add critical findings
-if [ "$two_factor_required" != "true" ]; then
-  echo "- **Enable mandatory 2FA**: Organization does not require two-factor authentication" >> "$REPORT_FILE"
-fi
+  if [ "$two_factor_required" != "true" ]; then
+    echo "- **Enable mandatory 2FA**: the organization does not require two-factor authentication" >> "$REPORT_FILE"
+  fi
+  if [ "$ghas_percentage" -lt 50 ]; then
+    echo "- **Enable code scanning**: only $ghas_percentage% of scored repositories have it on" >> "$REPORT_FILE"
+  fi
+  if [ "$protected_percentage" -lt 50 ]; then
+    echo "- **Implement branch protection**: only $protected_percentage% of repositories are protected" >> "$REPORT_FILE"
+  fi
+  if [ "$past_due_alerts" -gt 0 ]; then
+    echo "- **Remediate overdue findings**: $past_due_alerts findings exceed their RA-5 window" >> "$REPORT_FILE"
+  fi
+  if [ "$alerts_not_visible" -gt 0 ]; then
+    echo "- **Restore vulnerability visibility**: $alerts_not_visible repositories returned no alert data" >> "$REPORT_FILE"
+  fi
 
-if [ "$ghas_enabled" != "true" ]; then
-  echo "- **Enable GitHub Advanced Security**: GHAS provides critical security scanning capabilities" >> "$REPORT_FILE"
-fi
+  cat >> "$REPORT_FILE" << EOF
 
-if [ $protected_percentage -lt 50 ]; then
-  echo "- **Implement branch protection**: Only $protected_percentage% of repositories have protected branches" >> "$REPORT_FILE"
-fi
-
-cat >> "$REPORT_FILE" << EOF
-
-#### 🟡 High Priority Improvements
+#### High priority improvements
 EOF
 
-if [ $sbom_percentage -lt 50 ]; then
-  echo "- Generate SBOMs for all repositories (currently $sbom_percentage%)" >> "$REPORT_FILE"
-fi
+  if [ "$sbom_percentage" -lt 50 ]; then
+    echo "- Generate SBOMs for all repositories (currently $sbom_percentage%)" >> "$REPORT_FILE"
+  fi
+  if [ "$signing_percentage" -lt 50 ]; then
+    echo "- Implement artifact signing (currently $signing_percentage%)" >> "$REPORT_FILE"
+  fi
+  if [ "$attestation_percentage" -lt 50 ]; then
+    echo "- Add build provenance attestation to release workflows (currently $attestation_percentage%)" >> "$REPORT_FILE"
+  fi
+  if [ "$rulesets_percentage" -lt 50 ]; then
+    echo "- Configure repository rulesets for org-wide enforcement (currently $rulesets_percentage%)" >> "$REPORT_FILE"
+  fi
+  if [ "$pinning_percentage" -lt 80 ]; then
+    echo "- Pin third-party Actions to full commit SHAs (currently $pinning_percentage%)" >> "$REPORT_FILE"
+  fi
 
-if [ $signing_percentage -lt 50 ]; then
-  echo "- Implement artifact signing (currently $signing_percentage%)" >> "$REPORT_FILE"
-fi
+  cat >> "$REPORT_FILE" << EOF
 
-if [ $rulesets_percentage -lt 50 ]; then
-  echo "- Configure repository rulesets for advanced controls (currently $rulesets_percentage%)" >> "$REPORT_FILE"
-fi
-
-cat >> "$REPORT_FILE" << EOF
-
-#### 🟢 Recommended Enhancements
+#### Recommended enhancements
 - Implement automated compliance scanning in CI/CD pipelines
 - Configure audit log streaming for long-term retention
 - Document and test incident response procedures
 - Establish automated dependency update policies
-- Create security champions program
 
 ### Next Steps
 
-1. **Immediate (Week 1)**
+1. **First**
    - Enable mandatory 2FA for all organization members
    - Configure branch protection on all active repositories
    - Review and remediate critical security alerts
 
-2. **Short-term (Month 1)**
-   - Implement GitHub Advanced Security across all repositories
+2. **Then**
+   - Enable code and secret scanning across all repositories
    - Deploy SBOM generation workflows
-   - Configure artifact signing for releases
+   - Configure artifact signing and provenance attestation for releases
 
-3. **Long-term (Quarter 1)**
+3. **Sustaining**
    - Achieve 100% branch protection coverage
-   - Implement repository rulesets for fine-grained controls
-   - Establish continuous compliance monitoring
+   - Implement organization rulesets for fine-grained controls
+   - Establish continuous compliance monitoring against this evidence set
 
 ### Audit Details
-- **Audit Date**: $(date)
-- **Total Repositories Scanned**: $total_repos
-- **Parallel Workers Used**: $MAX_PARALLEL_JOBS
-- **Output Directory**: $OUTPUT_DIR
+- **Audit date**: $AUDIT_STARTED_AT (UTC)
+- **Tool version**: $AUDIT_TOOL_VERSION
+- **Repositories discovered / scored**: $total_repos / $scored_repos
+- **Concurrent workers**: $MAX_PARALLEL_JOBS
+- **Output directory**: $OUTPUT_DIR
 
-For detailed findings per repository, review the JSON files in the output directory.
+For detailed findings per repository, review \`summary.json\` and the JSON evidence tree.
 EOF
 }
 
@@ -1205,6 +1899,40 @@ else
   generate_framework_report "$FRAMEWORK"
 fi
 
+# An evidence package that cannot be shown to be unmodified is weak evidence.
+# The manifest lets an assessor verify the tree has not been edited after the
+# fact, and lets you diff two runs to prove remediation actually happened.
+echo "Writing evidence manifest..."
+if command -v sha256sum > /dev/null 2>&1; then
+  HASH_CMD="sha256sum"
+elif command -v shasum > /dev/null 2>&1; then
+  HASH_CMD="shasum -a 256"
+else
+  HASH_CMD=""
+fi
+
+if [ -n "$HASH_CMD" ]; then
+  (
+    cd "$OUTPUT_DIR" || exit 0
+    # Sorted for a stable manifest across runs. Newline-delimited is safe here:
+    # every path is built from repository and workflow names, which cannot
+    # contain newlines. BSD sort has no -z, so this stays portable.
+    # shellcheck disable=SC2086  # HASH_CMD may be "shasum -a 256"
+    find . -type f ! -name 'evidence_manifest.txt' ! -name '.progress' ! -name '.total' \
+      | LC_ALL=C sort | tr '\n' '\0' | xargs -0 $HASH_CMD
+  ) > "$OUTPUT_DIR/evidence_manifest.txt" 2>/dev/null || true
+fi
+
+rm -f "$OUTPUT_DIR/.progress" "$OUTPUT_DIR/.total"
+rm -f "${TMPDIR:-/tmp}/gh_compliance_audit_headers_$$"
+
 echo "$FRAMEWORK compliance audit completed!"
 echo "Report available at: $REPORT_FILE"
+echo "Machine-readable summary: $OUTPUT_DIR/summary.json"
 echo "Risk Score: $risk_score/100 (Compliance Level: $compliance_level)"
+
+# A non-zero exit lets CI gate on posture without parsing the report.
+if [ "$compliance_level" = "Low" ]; then
+  exit 2
+fi
+exit 0

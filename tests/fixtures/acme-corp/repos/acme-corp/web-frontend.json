@@ -1,0 +1,18 @@
+{
+  "name": "web-frontend",
+  "full_name": "acme-corp/web-frontend",
+  "private": false,
+  "archived": false,
+  "fork": false,
+  "size": 12000,
+  "default_branch": "main",
+  "pushed_at": "2026-07-22T14:05:00Z",
+  "web_commit_signoff_required": false,
+  "security_and_analysis": {
+    "code_security": { "status": "enabled" },
+    "secret_scanning": { "status": "enabled" },
+    "secret_scanning_push_protection": { "status": "enabled" },
+    "secret_scanning_delegated_bypass": { "status": "disabled" },
+    "dependabot_security_updates": { "status": "enabled" }
+  }
+}

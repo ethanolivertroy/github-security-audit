@@ -1,0 +1,152 @@
+{
+  "organization": "acme-corp",
+  "framework": "all",
+  "generated_at": "2026-07-25T12:00:00Z",
+  "tool_version": "2.0.0",
+  "repositories": {
+    "total": 5,
+    "scored": 3,
+    "archived": 1,
+    "empty": 1,
+    "private": 5
+  },
+  "organization_controls": {
+    "two_factor_required": true,
+    "security_managers": 1,
+    "owners": 2,
+    "members": 4,
+    "webhooks": {
+      "available": true,
+      "total": 2,
+      "without_secret": 1,
+      "insecure_ssl": 1,
+      "inactive": 0
+    },
+    "github_apps": {
+      "available": true,
+      "total": 3,
+      "with_write_access": 2,
+      "with_admin_access": 0,
+      "all_repositories": 2
+    },
+    "rulesets": {
+      "available": true,
+      "total": 1,
+      "active": 0
+    },
+    "default_repository_permission": "read",
+    "members_can_create_public_repositories": null,
+    "web_commit_signoff_required": false,
+    "code_security_configurations": {
+      "available": true,
+      "configurations": 1,
+      "enforced": 0,
+      "default_for_new_repos": "private_and_internal",
+      "defaults_enable_code_security": true,
+      "defaults_enable_push_protection": true,
+      "defaults_enable_private_vulnerability_reporting": false
+    },
+    "audit_log_accessible": false,
+    "security_policy_published": false
+  },
+  "coverage": {
+    "branch_protection": 66,
+    "rulesets": 33,
+    "review_with_code_owners": 33,
+    "code_scanning": 66,
+    "secret_scanning": 66,
+    "push_protection": 66,
+    "dependabot_alerts": 66,
+    "dependabot_security_updates": 66,
+    "codeowners": 66,
+    "security_policy": 33,
+    "sbom": 33,
+    "signing": 33,
+    "attestation": 33,
+    "actions_pinned_to_sha": 66,
+    "workflows_with_explicit_permissions": 50,
+    "read_only_default_token": 66,
+    "restricted_actions_policy": 66
+  },
+  "not_assessed": {
+    "repositories_without_security_settings": 0,
+    "repositories_without_actions_config": 0,
+    "repositories_without_alert_data": 1
+  },
+  "hard_findings": {
+    "repositories_where_actions_can_approve_prs": 1,
+    "repositories_allowing_any_third_party_action": 1,
+    "approved_push_protection_bypasses": 1,
+    "organization_webhooks_without_secret": 1,
+    "organization_webhooks_with_ssl_verification_disabled": 1,
+    "installed_apps_with_write_access": 2
+  },
+  "counts": {
+    "protected": 2,
+    "strong_review": 1,
+    "rulesets": 1,
+    "inherited_org_rulesets": 3,
+    "partially_protected_branches": 1,
+    "code_scanning": 2,
+    "secret_scanning": 2,
+    "push_protection": 2,
+    "delegated_bypass": 1,
+    "push_protection_without_review": 1,
+    "dependabot_updates": 2,
+    "dependabot_alerts": 2,
+    "codeowners": 2,
+    "security_policy": 1,
+    "sbom": 1,
+    "signing": 1,
+    "attestation": 1,
+    "actions_total": 6,
+    "actions_pinned": 4,
+    "workflows_total": 2,
+    "workflows_with_permissions": 1,
+    "read_only_default_token": 2,
+    "actions_can_approve_prs": 1,
+    "unrestricted_actions_policy": 1,
+    "actions_config_visible": 3,
+    "security_settings_visible": 3,
+    "push_protection_bypasses_approved": 1
+  },
+  "alerts": {
+    "dependabot": {
+      "open": 4,
+      "critical": 1,
+      "high": 1,
+      "past_due": 2,
+      "repos_without_visibility": 0
+    },
+    "code_scanning": {
+      "open": 0,
+      "critical": 0,
+      "high": 0,
+      "past_due": 0,
+      "repos_without_visibility": 1
+    },
+    "secret_scanning": {
+      "open": 1,
+      "past_due": 0,
+      "repos_without_visibility": 1
+    },
+    "repositories_without_visibility": 1
+  },
+  "score": {
+    "risk_score": 40,
+    "points_earned": 60,
+    "compliance_level": "Medium",
+    "breakdown": {
+      "two_factor": 15,
+      "branch_protection": 13,
+      "review_quality": 3,
+      "secret_protection": 9,
+      "code_scanning": 6,
+      "dependency_monitoring": 3,
+      "remediation_timeliness": 5,
+      "ownership": 3,
+      "workflow_hardening": 2,
+      "provenance": 1
+    }
+  }
+}

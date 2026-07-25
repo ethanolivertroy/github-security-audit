@@ -1,0 +1,5 @@
+{
+  "login": "empty-org",
+  "two_factor_requirement_enabled": false,
+  "default_repository_permission": "write"
+}
