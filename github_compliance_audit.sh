@@ -189,7 +189,14 @@ api_call_with_retry() {
     content="${response%$'\n'*}"
 
     case "$http_code" in
-      200|201)
+      # 204 means "yes, and there is nothing to return"; several enablement
+      # endpoints answer that way, and treating it as a failure reports the
+      # feature as disabled.
+      204)
+        echo '{}' > "$output_file"
+        return 0
+        ;;
+      2*)
         printf '%s\n' "$content" > "$output_file"
         return 0
         ;;
@@ -807,11 +814,16 @@ export OUTPUT_DIR
 if [ "$total_repos" -gt 0 ]; then
   echo "Processing repositories ($MAX_PARALLEL_JOBS workers)..."
   if [ "$RUNNER" = "parallel" ]; then
+    # GNU parallel runs each job through $SHELL, which is zsh by default on
+    # macOS, and zsh does not import the exported bash functions this script
+    # relies on. PARALLEL_SHELL pins it to bash.
     # --will-cite suppresses the interactive citation notice on first run.
-    parallel --will-cite -j "$MAX_PARALLEL_JOBS" \
-      process_repository {} "$ORG_NAME" "$OUTPUT_DIR" < "$OUTPUT_DIR/repo_list.txt"
+    PARALLEL_SHELL="$(command -v bash)" \
+      parallel --will-cite -j "$MAX_PARALLEL_JOBS" \
+        process_repository {} "$ORG_NAME" "$OUTPUT_DIR" \
+        < "$OUTPUT_DIR/repo_list.txt"
   else
-    # shellcheck disable=SC2016  # $1..$3 are for the inner shell, not this one
+    # shellcheck disable=SC2016  # $1..$3 belong to the inner shell, not this one
     xargs -P "$MAX_PARALLEL_JOBS" -I {} \
       bash -c 'process_repository "$1" "$2" "$3"' _ {} "$ORG_NAME" "$OUTPUT_DIR" \
       < "$OUTPUT_DIR/repo_list.txt"
@@ -1669,9 +1681,12 @@ fi
 if [ -n "$HASH_CMD" ]; then
   (
     cd "$OUTPUT_DIR" || exit 0
+    # Sorted for a stable manifest across runs. Newline-delimited is safe here:
+    # every path is built from repository and workflow names, which cannot
+    # contain newlines. BSD sort has no -z, so this stays portable.
     # shellcheck disable=SC2086  # HASH_CMD may be "shasum -a 256"
     find . -type f ! -name 'evidence_manifest.txt' ! -name '.progress' ! -name '.total' \
-      -print0 | sort -z | xargs -0 $HASH_CMD
+      | LC_ALL=C sort | tr '\n' '\0' | xargs -0 $HASH_CMD
   ) > "$OUTPUT_DIR/evidence_manifest.txt" 2>/dev/null || true
 fi
 

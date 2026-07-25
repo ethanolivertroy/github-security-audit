@@ -9,7 +9,7 @@
 | Organization | acme-corp |
 | Repositories discovered | 5 |
 | Repositories scored | 3 (archived: 1, excluded unless `INCLUDE_ARCHIVED=true`) |
-| Risk score | **49/100** (lower is better) |
+| Risk score | **47/100** (lower is better) |
 | Compliance level | **Medium** |
 
 ### Scope and evidence quality
@@ -72,7 +72,7 @@ Remediation windows used: critical 15 days, high 30, medium 90, low 180.
 ### Score breakdown
 
 Every point below is attributable to a measured control. Total earned:
-51/100, giving a risk score of 49.
+53/100, giving a risk score of 47.
 
 | Control | Points earned | Maximum |
 |---------|---------------|---------|
@@ -81,7 +81,7 @@ Every point below is attributable to a measured control. Total earned:
 | Review quality (code owners) | 3 | 10 |
 | Secret scanning push protection | 4 | 15 |
 | Code scanning coverage | 3 | 10 |
-| Dependency monitoring | 1 | 5 |
+| Dependency monitoring | 3 | 5 |
 | Remediation timeliness | 5 | 10 |
 | Code ownership | 3 | 5 |
 | Action pinning | 3 | 5 |

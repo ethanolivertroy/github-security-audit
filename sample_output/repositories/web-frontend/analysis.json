@@ -21,7 +21,7 @@
     "secret_scanning_push_protection": "disabled",
     "dependabot_security_updates": "enabled"
   },
-  "dependabot_alerts_enabled": false,
+  "dependabot_alerts_enabled": true,
   "codeowners": true,
   "security_policy": false,
   "alerts": {

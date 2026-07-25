@@ -63,6 +63,13 @@ status_file="$MOCK_API_DIR/$path.status"
   echo "x-ratelimit-remaining: 4999"
 } > "${header_file:-/dev/null}"
 
+# 204 carries no body, which is how GitHub answers several "is this enabled"
+# endpoints.
+if [ "$status" = "204" ]; then
+  printf '\n204'
+  exit 0
+fi
+
 if [ "$status" != "200" ]; then
   printf '{"message":"mock error"}\n%s' "$status"
   exit 0

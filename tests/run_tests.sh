@@ -143,6 +143,9 @@ assert_eq "repos without alert visibility tracked" "1" \
 assert_eq "partial blindness rolls up to the repository" "1" \
   "$(s '.alerts.repositories_without_visibility')"
 assert_eq "secret scanning alerts counted" "1" "$(s '.alerts.secret_scanning.open')"
+# vulnerability-alerts answers 204 with an empty body when enabled; treating a
+# 204 as a failure would report the feature as switched off.
+assert_eq "204 enablement responses read as enabled" "66" "$(s '.coverage.dependabot_alerts')"
 
 echo
 echo "== supply chain analysis =="

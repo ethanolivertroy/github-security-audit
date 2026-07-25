@@ -29,7 +29,7 @@
     "code_scanning": 33,
     "secret_scanning": 66,
     "push_protection": 33,
-    "dependabot_alerts": 33,
+    "dependabot_alerts": 66,
     "dependabot_security_updates": 66,
     "codeowners": 66,
     "security_policy": 33,
@@ -46,7 +46,7 @@
     "secret_scanning": 2,
     "push_protection": 1,
     "dependabot_updates": 2,
-    "dependabot_alerts": 1,
+    "dependabot_alerts": 2,
     "codeowners": 2,
     "security_policy": 1,
     "sbom": 1,
@@ -78,8 +78,8 @@
     "repositories_without_visibility": 1
   },
   "score": {
-    "risk_score": 49,
-    "points_earned": 51,
+    "risk_score": 47,
+    "points_earned": 53,
     "compliance_level": "Medium",
     "breakdown": {
       "two_factor": 15,
@@ -87,7 +87,7 @@
       "review_quality": 3,
       "secret_protection": 4,
       "code_scanning": 3,
-      "dependency_monitoring": 1,
+      "dependency_monitoring": 3,
       "remediation_timeliness": 5,
       "ownership": 3,
       "action_pinning": 3,
