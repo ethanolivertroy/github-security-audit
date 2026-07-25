@@ -1,0 +1,7 @@
+[
+  { "name": "payments-api" },
+  { "name": "legacy-billing" },
+  { "name": "web-frontend" },
+  { "name": "archived-prototype" },
+  { "name": "empty-scratch" }
+]

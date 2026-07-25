@@ -1,0 +1,16 @@
+{
+  "name": "archived-prototype",
+  "full_name": "acme-corp/archived-prototype",
+  "private": true,
+  "archived": true,
+  "fork": false,
+  "size": 300,
+  "default_branch": "main",
+  "pushed_at": "2021-03-02T11:00:00Z",
+  "security_and_analysis": {
+    "advanced_security": { "status": "disabled" },
+    "secret_scanning": { "status": "disabled" },
+    "secret_scanning_push_protection": { "status": "disabled" },
+    "dependabot_security_updates": { "status": "disabled" }
+  }
+}

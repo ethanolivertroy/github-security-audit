@@ -1,0 +1,17 @@
+{
+  "login": "acme-corp",
+  "id": 1234567,
+  "type": "Organization",
+  "two_factor_requirement_enabled": true,
+  "default_repository_permission": "read",
+  "members_can_create_public_repositories": false,
+  "web_commit_signoff_required": false,
+  "advanced_security_enabled_for_new_repositories": false,
+  "secret_scanning_enabled_for_new_repositories": true,
+  "secret_scanning_push_protection_enabled_for_new_repositories": true,
+  "plan": {
+    "name": "enterprise",
+    "seats": 100,
+    "filled_seats": 42
+  }
+}

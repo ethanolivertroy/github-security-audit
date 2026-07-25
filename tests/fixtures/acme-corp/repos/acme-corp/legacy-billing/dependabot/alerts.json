@@ -1,0 +1,20 @@
+[
+  {
+    "number": 1,
+    "state": "open",
+    "created_at": "2024-01-05T12:00:00Z",
+    "security_advisory": { "severity": "critical" }
+  },
+  {
+    "number": 2,
+    "state": "open",
+    "created_at": "2024-06-01T12:00:00Z",
+    "security_advisory": { "severity": "high" }
+  },
+  {
+    "number": 3,
+    "state": "open",
+    "created_at": "2026-07-24T12:00:00Z",
+    "security_advisory": { "severity": "medium" }
+  }
+]

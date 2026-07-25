@@ -1,0 +1,16 @@
+{
+  "name": "empty-scratch",
+  "full_name": "acme-corp/empty-scratch",
+  "private": true,
+  "archived": false,
+  "fork": false,
+  "size": 0,
+  "default_branch": "",
+  "pushed_at": null,
+  "security_and_analysis": {
+    "advanced_security": { "status": "disabled" },
+    "secret_scanning": { "status": "disabled" },
+    "secret_scanning_push_protection": { "status": "disabled" },
+    "dependabot_security_updates": { "status": "disabled" }
+  }
+}

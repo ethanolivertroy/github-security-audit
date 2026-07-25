@@ -1,0 +1,16 @@
+[
+  {
+    "id": 55,
+    "name": "protect-main",
+    "target": "branch",
+    "enforcement": "active",
+    "source_type": "Repository"
+  },
+  {
+    "id": 56,
+    "name": "draft-tag-rules",
+    "target": "tag",
+    "enforcement": "evaluate",
+    "source_type": "Repository"
+  }
+]

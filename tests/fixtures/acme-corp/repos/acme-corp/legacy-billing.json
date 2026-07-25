@@ -1,0 +1,17 @@
+{
+  "name": "legacy-billing",
+  "full_name": "acme-corp/legacy-billing",
+  "private": true,
+  "archived": false,
+  "fork": false,
+  "size": 88000,
+  "default_branch": "master",
+  "pushed_at": "2025-02-11T08:30:00Z",
+  "web_commit_signoff_required": false,
+  "security_and_analysis": {
+    "advanced_security": { "status": "disabled" },
+    "secret_scanning": { "status": "disabled" },
+    "secret_scanning_push_protection": { "status": "disabled" },
+    "dependabot_security_updates": { "status": "disabled" }
+  }
+}

@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Stand-in for curl that serves canned GitHub API responses from a fixture tree.
+#
+# It understands only the invocation shape the audit script uses:
+#   curl -sS -D <header-file> -w '\n%{http_code}' -H ... <url>
+#
+# Fixtures live under $MOCK_API_DIR and mirror API paths, so the response for
+# GET /orgs/acme/repos comes from $MOCK_API_DIR/orgs/acme/repos.json. A missing
+# fixture is a 404, which is exactly how GitHub reports an absent resource.
+set -uo pipefail
+
+header_file=""
+url=""
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    -D) header_file="$arg" ;;
+  esac
+  case "$arg" in
+    https://*|http://*) url="$arg" ;;
+  esac
+  prev="$arg"
+done
+
+: "${MOCK_API_DIR:?MOCK_API_DIR must point at a fixture tree}"
+
+# Record every request so tests can assert on API usage.
+if [ -n "${MOCK_API_LOG:-}" ]; then
+  echo "$url" >> "$MOCK_API_LOG"
+fi
+
+path="${url#*://}"
+path="${path#*/}"
+query=""
+case "$path" in
+  *\?*)
+    query="${path#*\?}"
+    path="${path%%\?*}"
+    ;;
+esac
+
+page=1
+case "$query" in
+  *page=*)
+    page="${query##*page=}"
+    page="${page%%&*}"
+    ;;
+esac
+
+status=200
+fixture="$MOCK_API_DIR/$path.json"
+if [ ! -f "$fixture" ]; then
+  fixture="$MOCK_API_DIR/$path"
+fi
+
+# Fixture directories may carry a status override, e.g. a 403 for endpoints the
+# token is not allowed to read.
+status_file="$MOCK_API_DIR/$path.status"
+[ -f "$status_file" ] && status="$(cat "$status_file")"
+
+{
+  echo "HTTP/2 $status"
+  echo "x-ratelimit-remaining: 4999"
+} > "${header_file:-/dev/null}"
+
+if [ "$status" != "200" ]; then
+  printf '{"message":"mock error"}\n%s' "$status"
+  exit 0
+fi
+
+if [ ! -f "$fixture" ]; then
+  {
+    echo "HTTP/2 404"
+    echo "x-ratelimit-remaining: 4999"
+  } > "${header_file:-/dev/null}"
+  printf '{"message":"Not Found"}\n404'
+  exit 0
+fi
+
+# Contents endpoints are served from readable raw files (a .yml fixture stays a
+# .yml fixture) and wrapped in the base64 envelope the real API returns.
+case "$path" in
+  */contents/*)
+    if [ "$fixture" = "$MOCK_API_DIR/$path" ]; then
+      encoded="$(base64 < "$fixture" | tr -d '\n')"
+      printf '{"path":"%s","encoding":"base64","content":"%s"}\n%s' \
+        "${path#*/contents/}" "$encoded" "$status"
+      exit 0
+    fi
+    ;;
+esac
+
+body="$(cat "$fixture")"
+
+# Page 2 of an array endpoint is always empty: the fixtures are small enough to
+# fit on one page, and this is what the real API returns past the end.
+if [ "$page" -gt 1 ] && [ "${body:0:1}" = "[" ]; then
+  body="[]"
+fi
+
+printf '%s\n%s' "$body" "$status"
