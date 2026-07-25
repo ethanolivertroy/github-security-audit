@@ -24,8 +24,11 @@
   "security_analysis": {
     "available": true,
     "advanced_security": "disabled",
+    "code_security": "unknown",
+    "code_security_enabled": false,
     "secret_scanning": "disabled",
     "secret_scanning_push_protection": "disabled",
+    "secret_scanning_delegated_bypass": "unknown",
     "dependabot_security_updates": "disabled"
   },
   "actions": {

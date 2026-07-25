@@ -9,7 +9,7 @@
 | Organization | acme-corp |
 | Repositories discovered | 5 |
 | Repositories scored | 3 (archived: 1, excluded unless `INCLUDE_ARCHIVED=true`) |
-| Risk score | **48/100** (lower is better) |
+| Risk score | **40/100** (lower is better) |
 | Compliance level | **Medium** |
 
 ### Scope and evidence quality
@@ -28,6 +28,7 @@
 - **The default `GITHUB_TOKEN` has write access in 34% of repositories.** Every third-party action in those workflows inherits commit rights (CM-7, SR-5).
 - **Any third-party Action may run in 34% of repositories.** There is no supplier gate on code executing in your CI (SR-5, SR-6).
 - **Approved push protection bypasses: 1.** A secret reached the repository despite push protection being enabled. Treat those secrets as exposed and rotate them.
+- **Repositories where push protection can be bypassed without review: 1.** Delegated bypass is off, so any contributor can wave a secret through unilaterally and the control depends on their judgement.
 - **Organization webhooks with no secret configured: 1.** Their receivers cannot authenticate payloads as coming from GitHub (SC-8, AU-9).
 - **Organization webhooks with SSL verification disabled: 1.** Payloads are deliverable to an interceptor (SC-8).
 - **Installed GitHub Apps with write access: 2.** Each is a supplier holding commit rights and needs a documented assessment (SR-6, AC-6).
@@ -39,11 +40,11 @@ input to an assessment, never a substitute for one.
 
 | Framework | Branch protection | Review enforcement | Scanning | Overdue findings | Readiness |
 |-----------|-------------------|--------------------|----------|------------------|-----------|
-| FedRAMP / NIST | ⚠ 66% | ✗ 33% | ✗ 33% | ✗ 2 | Gaps identified |
-| SOC 2 | ✗ 66% | ✗ 33% | ✗ 33% | ✗ 2 | Gaps identified |
-| HIPAA | ✗ 66% | ✗ 33% | ✗ 33% | ✗ 2 | Gaps identified |
-| ISO 27001 | ⚠ 66% | ✗ 33% | ✗ 33% | ✗ 2 | Gaps identified |
-| PCI-DSS | ✗ 66% | ✗ 33% | ✗ 33% | ✗ 2 | Gaps identified |
+| FedRAMP / NIST | ⚠ 66% | ✗ 33% | ⚠ 66% | ✗ 2 | Gaps identified |
+| SOC 2 | ✗ 66% | ✗ 33% | ✗ 66% | ✗ 2 | Gaps identified |
+| HIPAA | ✗ 66% | ✗ 33% | ✗ 66% | ✗ 2 | Gaps identified |
+| ISO 27001 | ⚠ 66% | ✗ 33% | ⚠ 66% | ✗ 2 | Gaps identified |
+| PCI-DSS | ✗ 66% | ✗ 33% | ✗ 66% | ✗ 2 | Gaps identified |
 
 ### Universal Security Controls Assessment
 
@@ -52,8 +53,8 @@ input to an assessment, never a substitute for one.
 | Multi-factor authentication | true | Required | Required | Required | Required | Required |
 | Branch protection or ruleset | 66% | 80%+ | 90%+ | 100% | 80%+ | 100% |
 | Code owner review required | 33% | 80%+ | 90%+ | 100% | 80%+ | 100% |
-| Code scanning coverage | 33% | Required | Required | Required | Required | Required |
-| Secret scanning push protection | 33% | Required | Required | Required | Required | Required |
+| Code scanning coverage | 66% | Required | Required | Required | Required | Required |
+| Secret scanning push protection | 66% | Required | Required | Required | Required | Required |
 | Open findings past due | 2 | 0 | 0 | 0 | 0 | 0 |
 | Audit log accessible | false | Required | Required | Required | Required | Required |
 | Actions pinned to a commit SHA | 66% | 80%+ | Recommended | Recommended | 80%+ | Recommended |
@@ -75,8 +76,8 @@ Remediation windows used: critical 15 days, high 30, medium 90, low 180.
 
 ### Critical Actions Required Across All Frameworks
 
-- **CRITICAL**: Enable code scanning (currently 33% of repositories)
-- **CRITICAL**: Enable secret scanning push protection (currently 33%)
+- **CRITICAL**: Enable code scanning (currently 66% of repositories)
+- **CRITICAL**: Enable secret scanning push protection (currently 66%)
 - **HIGH**: Increase branch protection to 80%+ minimum (currently 66%)
 - **HIGH**: Remediate 2 findings that are past their window
 - **HIGH**: Obtain organization audit log access and configure log streaming
@@ -85,15 +86,15 @@ Remediation windows used: critical 15 days, high 30, medium 90, low 180.
 ### Score breakdown
 
 Every point below is attributable to a measured control. Total earned:
-52/100, giving a risk score of 48.
+60/100, giving a risk score of 40.
 
 | Control | Points earned | Maximum |
 |---------|---------------|---------|
 | Multi-factor authentication | 15 | 15 |
 | Branch protection coverage | 13 | 20 |
 | Review quality (code owners) | 3 | 10 |
-| Secret scanning push protection | 4 | 15 |
-| Code scanning coverage | 3 | 10 |
+| Secret scanning push protection | 9 | 15 |
+| Code scanning coverage | 6 | 10 |
 | Dependency monitoring | 3 | 5 |
 | Remediation timeliness | 5 | 10 |
 | Code ownership | 3 | 5 |
@@ -109,6 +110,7 @@ Every point below is attributable to a measured control. Total earned:
 | Security managers | 1 |
 | Default repository permission | read |
 | Organization rulesets | 1 (0 active, inherited by 3 repositories) |
+| Code security configurations | 1 (0 enforced, default for new repositories: private_and_internal) |
 | Installed GitHub Apps | 3 (2 with write access, 2 scoped to all repositories) |
 | Organization webhooks | 2 (1 without a secret, 1 with SSL verification disabled) |
 

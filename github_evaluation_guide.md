@@ -9,9 +9,28 @@ Work through org settings, representative repositories, CI/CD, and supply chain 
 - **SOC 2 Type II** (Trust Service Criteria)
 - **HIPAA Security Rule** (45 CFR § 164.308–312)
 - **ISO 27001:2022** (Annex A)
-- **PCI-DSS v4.0**
+- **PCI-DSS v4.0.1**
 
 Each section pairs Admin UI steps with `gh api` checks and a short checklist. Supply chain material leans on NIST 800-161r1-upd1 and Executive Order 14028. Use this beside `github_compliance_audit.sh`, not instead of it.
+
+### Versions this guide is written against
+
+Control identifiers move. Check these before quoting a mapping in a deliverable.
+
+| Standard | Version used here | Notes |
+|----------|-------------------|-------|
+| NIST SP 800-53 | Rev 5 | FedRAMP baselines derive from it |
+| NIST SP 800-161 | Rev 1 Update 1 | Supply chain, SR family |
+| SOC 2 | TSC 2017 with 2022 points of focus | |
+| HIPAA Security Rule | Current rule (2013) | A January 2025 proposed rule would add mandatory MFA, encryption, and asset inventory. Not final; final action projected 2027. The current rule still governs. |
+| ISO/IEC 27001 | 2022 | 2013 certificates expired 31 October 2025 |
+| PCI DSS | v4.0.1 | v4.0 retired 31 December 2024. The 51 future-dated requirements have been mandatory since 31 March 2025, so they are scored as ordinary requirements. |
+
+On the GitHub side, Advanced Security was unbundled on 1 April 2025 into
+**GitHub Code Security** and **GitHub Secret Protection**, and the organization
+`*_enabled_for_new_repositories` API fields were removed on 21 April 2026 in
+favour of code security configurations. Where this guide says "Advanced
+Security", read it as whichever of the two products covers the feature.
 
 ## Table of Contents
 1. [Prerequisites](#prerequisites)
@@ -80,11 +99,11 @@ GitHub features rarely map one-to-one to a single framework. Start here when you
 ### Universal Security Controls
 
 ISO 27001 identifiers below follow the **2022** revision (A.5 organizational,
-A.6 people, A.7 physical, A.8 technological). If your ISMS documentation still
-uses the 2013 A.5-A.18 structure, map through the transition annex before
-quoting these.
+A.6 people, A.7 physical, A.8 technological). The transition period from the
+2013 revision closed on 31 October 2025, so 2013 certificates are no longer
+valid and the A.5-A.18 numbering should not appear in current documentation.
 
-| GitHub Feature | FedRAMP/NIST | SOC 2 | HIPAA | ISO 27001:2022 | PCI-DSS v4.0 |
+| GitHub Feature | FedRAMP/NIST | SOC 2 | HIPAA | ISO 27001:2022 | PCI-DSS v4.0.1 |
 |----------------|--------------|--------|--------|----------------|----------|
 | Two-Factor Authentication | AC-2, IA-2 | CC6.1, CC6.7 | 164.308(a)(3) | A.5.17, A.8.5 | Req 8.3, 8.4 |
 | Branch Protection / Rulesets | CM-2, CM-3, CM-5 | CC6.1, CC8.1 | 164.308(a)(4) | A.8.4, A.8.32 | Req 6.5.1 |
@@ -100,7 +119,7 @@ quoting these.
 
 #### SOC 2 Trust Service Criteria
 - **CC6.1-CC6.8**: Logical and Physical Access Controls → GitHub 2FA, Branch Protection, RBAC
-- **CC7.1-CC7.4**: System Operations → GitHub Advanced Security, Audit Logs
+- **CC7.1-CC7.4**: System Operations → Code Security, Secret Protection, Audit Logs
 - **CC8.1**: Change Management → PR Reviews, Branch Protection Rules
 
 #### HIPAA Security Rule
@@ -112,7 +131,7 @@ quoting these.
 - **A.5 Organizational**: A.5.1 policies, A.5.2 roles, A.5.9 asset inventory, A.5.15 access control, A.5.17 authentication information
 - **A.8 Technological**: A.8.2 privileged access, A.8.4 access to source code, A.8.8 technical vulnerabilities, A.8.12 data leakage prevention, A.8.15 logging, A.8.25 secure development lifecycle, A.8.28 secure coding, A.8.30 outsourced development, A.8.32 change management
 
-#### PCI-DSS v4.0
+#### PCI-DSS v4.0.1
 - **Requirements 1-2**: Network Security → Repository access controls
 - **Requirements 3-4**: Data Protection → Secret scanning, encryption
 - **Requirements 6**: Secure Development → Code scanning, PR reviews
@@ -128,7 +147,7 @@ quoting these.
 - **SOC 2**: CC6.1, CC6.2
 - **HIPAA**: 164.308(a)(3), 164.308(a)(4)
 - **ISO 27001:2022**: A.5.16, A.5.18
-- **PCI-DSS v4.0**: Req 7.2, 8.2
+- **PCI-DSS v4.0.1**: Req 7.2, 8.2
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → People**
@@ -176,15 +195,24 @@ gh api orgs/$GH_ORG/teams --paginate > org_teams.json
 TEAM_SLUG="your-team-slug"
 gh api orgs/$GH_ORG/teams/$TEAM_SLUG/repos > team_repos.json
 
-# Base permissions and the security defaults applied to new repositories are
-# fields on the organization payload, not a separate settings endpoint.
+# Base permissions are fields on the organization payload, not a separate
+# settings endpoint.
 gh api orgs/$GH_ORG --jq '{
   default_repository_permission,
   members_can_create_public_repositories,
-  advanced_security_enabled_for_new_repositories,
-  secret_scanning_enabled_for_new_repositories,
-  secret_scanning_push_protection_enabled_for_new_repositories
+  web_commit_signoff_required
 }' > org_security_settings.json
+
+# The security defaults for new repositories used to live on that payload as
+# advanced_security_enabled_for_new_repositories and friends. Those fields were
+# removed on 21 April 2026. Code security configurations replaced them, and the
+# defaults endpoint is what now answers "what does a new repository inherit".
+gh api "orgs/$GH_ORG/code-security/configurations" > code_security_configurations.json
+gh api "orgs/$GH_ORG/code-security/configurations/defaults" > code_security_defaults.json
+
+# An unenforced configuration can be switched off by a repository admin, which
+# is the difference between a default and a control.
+jq -r '.[] | "\(.name): enforcement=\(.enforcement)"' code_security_configurations.json
 ```
 
 #### Requirements Checklist
@@ -233,7 +261,7 @@ gh api graphql -f owner="$GH_ORG" -f query='
 - **SOC 2**: CC6.1, CC6.7
 - **HIPAA**: 164.308(a)(3), 164.312(a)(1)
 - **ISO 27001:2022**: A.5.17, A.8.5
-- **PCI-DSS v4.0**: Req 8.3, 8.4
+- **PCI-DSS v4.0.1**: Req 8.3, 8.4
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → Authentication security**
@@ -280,7 +308,7 @@ gh api "scim/v2/organizations/$GH_ORG/Users" > scim_users.json 2>/dev/null \
 - **SOC 2**: CC7.2, CC7.3
 - **HIPAA**: 164.312(b) (Required)
 - **ISO 27001:2022**: A.8.15, A.8.16
-- **PCI-DSS v4.0**: Req 10.2, 10.3
+- **PCI-DSS v4.0.1**: Req 10.2, 10.3
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → Audit log**
@@ -435,8 +463,13 @@ gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.dependabot_security_upda
 
 #### API Verification
 ```bash
-# Check if code scanning is enabled
-gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.advanced_security.status' > advanced_security.json
+# Whether code scanning is licensed for this repository. Since the April 2025
+# unbundling, repositories covered by the standalone GitHub Code Security
+# product report through .code_security and leave .advanced_security unset, so
+# checking only the legacy field reports a false negative.
+gh api "repos/$GH_ORG/$REPO" --jq \
+  '.security_and_analysis | {advanced_security: .advanced_security.status, code_security: .code_security.status}' \
+  > code_security_status.json
 
 # Get code scanning alerts
 gh api repos/$GH_ORG/$REPO/code-scanning/alerts > code_scanning_alerts.json 2>/dev/null || echo "No access to code scanning alerts"
@@ -469,6 +502,17 @@ gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.secret_scanning.status' 
 # Check if push protection is enabled
 gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.secret_scanning_push_protection.status' > secret_scanning_push_protection.json
 
+# Delegated bypass routes an override through a reviewer. Without it, push
+# protection is advisory: any contributor can wave a secret through.
+gh api "repos/$GH_ORG/$REPO" \
+  --jq '.security_and_analysis.secret_scanning_delegated_bypass.status' > delegated_bypass.json
+
+# Bypasses that were actually granted. Each one means a secret reached the
+# repository and should be treated as exposed.
+gh api "repos/$GH_ORG/$REPO/bypass-requests/secret-scanning" --paginate \
+  --jq '[.[] | select(.status == "approved" or .status == "completed")] | length' \
+  > approved_bypasses.txt
+
 # Get secret scanning alerts
 gh api repos/$GH_ORG/$REPO/secret-scanning/alerts > secret_scanning_alerts.json 2>/dev/null || echo "No access to secret scanning alerts"
 ```
@@ -476,6 +520,8 @@ gh api repos/$GH_ORG/$REPO/secret-scanning/alerts > secret_scanning_alerts.json 
 #### Requirements Checklist
 - [ ] Secret scanning is enabled
 - [ ] Push protection is enabled to prevent secret commits
+- [ ] Delegated bypass is enabled so an override requires reviewer approval
+- [ ] Any approved bypass has a corresponding secret rotation record
 - [ ] Custom patterns are defined for organization-specific secrets (if applicable)
 - [ ] Process exists for reviewing and remediating alerts
 - [ ] SLAs are defined for addressing exposed secrets
@@ -863,7 +909,8 @@ When you roll findings up for leadership or an assessor, include:
 - [SLSA Framework](https://slsa.dev/) - Supply chain Levels for Software Artifacts
 - [Sigstore](https://www.sigstore.dev/) - Keyless signing for software artifacts
 - [GitHub Security Documentation](https://docs.github.com/en/enterprise-cloud@latest/code-security/getting-started/github-security-features) - Overview of GitHub Security Features
-- [GitHub Advanced Security Documentation](https://docs.github.com/en/enterprise-cloud@latest/get-started/learning-about-github/about-github-advanced-security) - Information on GitHub Advanced Security offerings
+- [GitHub Code Security](https://docs.github.com/en/code-security) and [GitHub Secret Protection](https://docs.github.com/en/code-security/secret-scanning) - the two products Advanced Security was unbundled into on 1 April 2025
+- [Code security configurations](https://docs.github.com/en/rest/code-security/configurations) - the replacement for the removed organization security API fields
 - [GitHub Dependency Review Action](https://github.com/actions/dependency-review-action) - Automated dependency review for pull requests
 - [GitHub SBOM Generator Action](https://github.com/marketplace/actions/software-bill-of-materials-sbom-generator) - SBOM generation in GitHub Actions
 
@@ -889,12 +936,12 @@ Use these as pressure tests after the shared walkthrough. Each framework raises 
 - **Asset management**: Repo inventory and ownership (CODEOWNERS)
 - **Continuous improvement**: Regular security review evidence, not a one-time audit
 
-### PCI-DSS v4.0
+### PCI-DSS v4.0.1
 - **Zero open vulns** in in-scope production code paths
 - **100% code review** via PRs
 - **MFA** for all users with access
 - **Audit logging** of access and changes
-- **Secure development**: GHAS (or equivalent) enabled for vulnerability scanning
+- **Secure development**: Code Security (or equivalent) enabled for vulnerability scanning
 
 ## Automated evaluation
 

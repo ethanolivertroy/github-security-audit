@@ -448,14 +448,27 @@ summarize_repository() {
   # security_and_analysis is only returned to callers with admin permission on
   # the repository. Absent fields mean "we were not allowed to look", which is
   # not the same as the features being off.
-  local security_analysis='{"available":false,"advanced_security":"unknown","secret_scanning":"unknown","secret_scanning_push_protection":"unknown","dependabot_security_updates":"unknown"}'
+  #
+  # GitHub Advanced Security was unbundled on 1 April 2025 into GitHub Code
+  # Security and GitHub Secret Protection. Repositories covered by the
+  # standalone Code Security product report through .code_security and leave
+  # .advanced_security unset, so reading only the latter reports code scanning
+  # as disabled for every organization that bought or renewed since then.
+  local security_analysis='{"available":false,"advanced_security":"unknown","code_security":"unknown","code_security_enabled":false,"secret_scanning":"unknown","secret_scanning_push_protection":"unknown","secret_scanning_delegated_bypass":"unknown","dependabot_security_updates":"unknown"}'
   if api_ok "$repo_dir/info.json"; then
-    security_analysis=$(jq '{
-      available: (.security_and_analysis != null),
-      advanced_security: (.security_and_analysis.advanced_security.status // "unknown"),
-      secret_scanning: (.security_and_analysis.secret_scanning.status // "unknown"),
-      secret_scanning_push_protection: (.security_and_analysis.secret_scanning_push_protection.status // "unknown"),
-      dependabot_security_updates: (.security_and_analysis.dependabot_security_updates.status // "unknown")
+    security_analysis=$(jq '.security_and_analysis as $s | {
+      available: ($s != null),
+      advanced_security: ($s.advanced_security.status // "unknown"),
+      code_security: ($s.code_security.status // "unknown"),
+      code_security_enabled: (
+        ($s.code_security.status == "enabled") or
+        ($s.advanced_security.status == "enabled")),
+      secret_scanning: ($s.secret_scanning.status // "unknown"),
+      secret_scanning_push_protection: ($s.secret_scanning_push_protection.status // "unknown"),
+      # Delegated bypass routes a push protection override through a reviewer.
+      # Without it any contributor can wave a secret through unilaterally.
+      secret_scanning_delegated_bypass: ($s.secret_scanning_delegated_bypass.status // "unknown"),
+      dependabot_security_updates: ($s.dependabot_security_updates.status // "unknown")
     }' "$repo_dir/info.json")
   fi
 
@@ -594,8 +607,8 @@ process_repository() {
   mkdir -p "$repo_dir/branches" "$repo_dir/workflows" "$repo_dir/supply_chain/workflow_analysis"
 
   # Repository details. security_and_analysis on this payload is the source of
-  # truth for per-repo GHAS state, so it is fetched once and reused rather than
-  # requested twice as it used to be.
+  # truth for Code Security and Secret Protection state, so it is fetched once
+  # and reused rather than requested twice as it used to be.
   api_call_with_retry "repos/$org_name/$repo_name" "$repo_dir/info.json"
 
   local default_branch
@@ -628,7 +641,7 @@ process_repository() {
   api_call_paginated "repos/$org_name/$repo_name/secret-scanning/alerts?state=open" \
     "$repo_dir/secret_scanning_alerts.json"
 
-  # Push protection bypass requests (GHAS + secret scanning).
+  # Push protection bypass requests (Secret Protection).
   api_call_paginated "repos/$org_name/$repo_name/bypass-requests/secret-scanning" \
     "$repo_dir/push_protection_bypasses.json"
 
@@ -700,91 +713,6 @@ export -f api_status
 export -f b64_decode
 export -f update_progress
 
-# Framework-specific check functions
-
-# Check if a control is applicable to the selected framework
-is_control_applicable() {
-  local control="$1"
-  local framework="$2"
-
-  case "$framework" in
-    "fedramp"|"nist"|"all")
-      # All controls apply for FedRAMP/NIST
-      return 0
-      ;;
-    "soc2")
-      # SOC2 Trust Service Criteria mapping
-      case "$control" in
-        "access_control"|"authentication"|"monitoring"|"encryption"|"audit_logs"|"vulnerability_management")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
-    "hipaa")
-      # HIPAA Security Rule controls
-      case "$control" in
-        "access_control"|"authentication"|"encryption"|"audit_logs"|"integrity"|"transmission_security")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
-    "iso27001")
-      # ISO 27001 Annex A controls
-      case "$control" in
-        "access_control"|"authentication"|"monitoring"|"encryption"|"audit_logs"|"vulnerability_management"|"incident_response")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
-    "pci-dss")
-      # PCI-DSS requirements
-      case "$control" in
-        "access_control"|"authentication"|"monitoring"|"encryption"|"vulnerability_management"|"secure_development")
-          return 0 ;;
-        *) return 1 ;;
-      esac
-      ;;
-  esac
-}
-
-# Get framework-specific requirements
-get_framework_requirements() {
-  local framework="$1"
-
-  case "$framework" in
-    "soc2")
-      echo "SOC 2 Type II Trust Service Criteria (TSC)"
-      echo "- CC6.1: Logical and Physical Access Controls"
-      echo "- CC6.6: System Operations"
-      echo "- CC7.1: System Monitoring"
-      echo "- CC7.2: Anomaly Detection"
-      ;;
-    "hipaa")
-      echo "HIPAA Security Rule Requirements"
-      echo "- 164.308(a)(1): Security Management Process"
-      echo "- 164.308(a)(3): Workforce Security"
-      echo "- 164.308(a)(4): Information Access Management"
-      echo "- 164.312(a)(1): Access Control"
-      echo "- 164.312(b): Audit Controls"
-      ;;
-    "iso27001")
-      echo "ISO 27001:2022 Annex A Controls"
-      echo "- A.9: Access Control"
-      echo "- A.12: Operations Security"
-      echo "- A.14: System Development Security"
-      echo "- A.16: Incident Management"
-      ;;
-    "pci-dss")
-      echo "PCI-DSS v4.0 Requirements"
-      echo "- Requirement 1-2: Network Security"
-      echo "- Requirement 3-4: Data Protection"
-      echo "- Requirement 7-8: Access Control"
-      echo "- Requirement 10: Logging and Monitoring"
-      echo "- Requirement 11: Security Testing"
-      ;;
-  esac
-}
-
 # Report rendering helpers
 
 # ✓ when the measurement clears the bar, ⚠ when it is within 20% of it,
@@ -853,6 +781,14 @@ api_call_paginated "orgs/$ORG_NAME/hooks" "$OUTPUT_DIR/org_security/webhooks.jso
 # Organization rulesets enforce change control across every repository at once,
 # which is stronger evidence for CM-3 than the same rules repeated per repo.
 api_call_paginated "orgs/$ORG_NAME/rulesets" "$OUTPUT_DIR/org_security/org_rulesets.json"
+
+# Code security configurations replaced the org-level *_enabled_for_new_repositories
+# fields, which GitHub removed from the organization API on 21 April 2026. They
+# are now the only way to see what new repositories inherit.
+api_call_paginated "orgs/$ORG_NAME/code-security/configurations" \
+  "$OUTPUT_DIR/org_security/code_security_configurations.json"
+api_call_paginated "orgs/$ORG_NAME/code-security/configurations/defaults" \
+  "$OUTPUT_DIR/org_security/code_security_defaults.json"
 # This endpoint wraps its list in an object, so it is not paginated the same way.
 api_call_with_retry "orgs/$ORG_NAME/installations?per_page=100" "$OUTPUT_DIR/org_security/github_apps.json"
 
@@ -923,6 +859,41 @@ api_ok "$OUTPUT_DIR/org_security/audit_log_sample.json" && audit_log_available=t
 org_security_policy=false
 api_ok "$OUTPUT_DIR/org_security/security_policy.json" && org_security_policy=true
 
+# What a newly created repository inherits. Enforced configurations also stop a
+# repository admin from turning the controls back off, which is the difference
+# between a setting and a control.
+code_security_config='{"available":false,"configurations":0,"enforced":0,"default_for_new_repos":null,"defaults_enable_code_security":null,"defaults_enable_push_protection":null,"defaults_enable_private_vulnerability_reporting":null}'
+if api_ok "$OUTPUT_DIR/org_security/code_security_configurations.json"; then
+  code_security_config=$(jq -n \
+    --slurpfile configs "$OUTPUT_DIR/org_security/code_security_configurations.json" \
+    --slurpfile defaults "$OUTPUT_DIR/org_security/code_security_defaults.json" \
+    '($configs[0] // []) as $c
+     | (($defaults[0] // []) | if type == "array" then . else [] end) as $d
+     # "all" covers every visibility; a default scoped to public only leaves
+     # private repositories inheriting nothing.
+     | ([$d[] | select(.default_for_new_repos == "all")] | first) as $broad
+     | ($broad // ($d | first)) as $chosen
+     | {
+         available: true,
+         configurations: ($c | length),
+         enforced: ([$c[] | select(.enforcement == "enforced")] | length),
+         default_for_new_repos: ($chosen.default_for_new_repos // null),
+         defaults_enable_code_security: (
+           if $chosen == null then null
+           else (($chosen.configuration.code_security // $chosen.configuration.advanced_security) as $v
+                 | $v == "enabled" or $v == "code_security")
+           end),
+         defaults_enable_push_protection: (
+           if $chosen == null then null
+           else ($chosen.configuration.secret_scanning_push_protection == "enabled")
+           end),
+         defaults_enable_private_vulnerability_reporting: (
+           if $chosen == null then null
+           else ($chosen.configuration.private_vulnerability_reporting == "enabled")
+           end)
+       }')
+fi
+
 org_rulesets='{"available":false,"total":0,"active":0}'
 if api_ok "$OUTPUT_DIR/org_security/org_rulesets.json"; then
   org_rulesets=$(jq '{
@@ -987,6 +958,7 @@ jq -s \
   --argjson org_webhooks "$org_webhooks" \
   --argjson org_apps "$org_apps" \
   --argjson org_rulesets "$org_rulesets" \
+  --argjson code_security_config "$code_security_config" \
   --argjson include_archived "$([ "$INCLUDE_ARCHIVED" = "true" ] && echo true || echo false)" '
   def pct($n; $d): if $d == 0 then 0 else (($n * 100 / $d) | floor) end;
 
@@ -1008,9 +980,13 @@ jq -s \
       partially_protected_branches: [$scored[] | select(
         .branches.available and .branches.total > 1 and
         .branches.protected > 0 and .branches.protected < .branches.total)] | length,
-      code_scanning: [$scored[] | select(.security_analysis.advanced_security == "enabled")] | length,
+      code_scanning: [$scored[] | select(.security_analysis.code_security_enabled)] | length,
       secret_scanning: [$scored[] | select(.security_analysis.secret_scanning == "enabled")] | length,
       push_protection: [$scored[] | select(.security_analysis.secret_scanning_push_protection == "enabled")] | length,
+      delegated_bypass: [$scored[] | select(.security_analysis.secret_scanning_delegated_bypass == "enabled")] | length,
+      push_protection_without_review: [$scored[] | select(
+        .security_analysis.secret_scanning_push_protection == "enabled" and
+        .security_analysis.secret_scanning_delegated_bypass != "enabled")] | length,
       dependabot_updates: [$scored[] | select(.security_analysis.dependabot_security_updates == "enabled")] | length,
       dependabot_alerts: [$scored[] | select(.dependabot_alerts_enabled)] | length,
       codeowners: [$scored[] | select(.codeowners)] | length,
@@ -1101,9 +1077,7 @@ jq -s \
         default_repository_permission: ($o.default_repository_permission // "unknown"),
         members_can_create_public_repositories: ($o.members_can_create_public_repositories // null),
         web_commit_signoff_required: ($o.web_commit_signoff_required // false),
-        advanced_security_default_for_new_repos: ($o.advanced_security_enabled_for_new_repositories // null),
-        secret_scanning_default_for_new_repos: ($o.secret_scanning_enabled_for_new_repositories // null),
-        push_protection_default_for_new_repos: ($o.secret_scanning_push_protection_enabled_for_new_repositories // null),
+        code_security_configurations: $code_security_config,
         audit_log_accessible: $audit_log_available,
         security_policy_published: $org_security_policy
       },
@@ -1172,6 +1146,8 @@ review_percentage=$(read_summary '.coverage.review_with_code_owners')
 ghas_percentage=$(read_summary '.coverage.code_scanning')
 secret_scanning_percentage=$(read_summary '.coverage.secret_scanning')
 push_protection_percentage=$(read_summary '.coverage.push_protection')
+push_protection_without_review=$(read_summary '.counts.push_protection_without_review')
+default_config_for_new_repos=$(read_summary '.organization_controls.code_security_configurations.default_for_new_repos')
 codeowners_percentage=$(read_summary '.coverage.codeowners')
 sbom_percentage=$(read_summary '.coverage.sbom')
 signing_percentage=$(read_summary '.coverage.signing')
@@ -1291,6 +1267,14 @@ report_hard_findings() {
   fi
   if [ "$approved_bypasses" -gt 0 ]; then
     echo "- **Approved push protection bypasses: $approved_bypasses.** A secret reached the repository despite push protection being enabled. Treat those secrets as exposed and rotate them." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$push_protection_without_review" -gt 0 ]; then
+    echo "- **Repositories where push protection can be bypassed without review: $push_protection_without_review.** Delegated bypass is off, so any contributor can wave a secret through unilaterally and the control depends on their judgement." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$default_config_for_new_repos" = "null" ]; then
+    echo "- **No code security configuration is applied to new repositories.** Every repository created from now on starts with scanning off, so today's coverage decays by default (CM-2, CM-6)." >> "$REPORT_FILE"
     any=true
   fi
   if [ "$webhooks_without_secret" -gt 0 ]; then
@@ -1488,10 +1472,10 @@ EOF
 
 # Generate PCI-DSS report
 generate_pcidss_report() {
-  report_header "GitHub PCI-DSS v4.0 Compliance Report"
+  report_header "GitHub PCI-DSS v4.0.1 Compliance Report"
 
   cat >> "$REPORT_FILE" << EOF
-### PCI-DSS v4.0 Requirements Assessment
+### PCI-DSS v4.0.1 Requirements Assessment
 
 > Only the requirements that a source control platform can evidence are listed.
 > Requirements 1-4 are largely network and cardholder data controls that GitHub
@@ -1533,7 +1517,7 @@ generate_pcidss_report() {
 | 12.1.1 | Information security policy maintained | $(bool_status "$org_security_policy") | Organization SECURITY.md published: $org_security_policy |
 | 12.10.1 | Incident response plan exists | $(bool_status "$org_security_policy") | Documented reporting path |
 
-### PCI-DSS v4.0 Critical Failures
+### PCI-DSS v4.0.1 Critical Failures
 
 EOF
 
@@ -1673,6 +1657,7 @@ $(read_summary '.score.points_earned')/100, giving a risk score of $risk_score.
 | Security managers | $security_managers_count |
 | Default repository permission | $(read_summary '.organization_controls.default_repository_permission') |
 | Organization rulesets | $(read_summary '.organization_controls.rulesets.total') ($(read_summary '.organization_controls.rulesets.active') active, inherited by $(read_summary '.counts.inherited_org_rulesets') repositories) |
+| Code security configurations | $(read_summary '.organization_controls.code_security_configurations.configurations') ($(read_summary '.organization_controls.code_security_configurations.enforced') enforced, default for new repositories: $(read_summary '.organization_controls.code_security_configurations.default_for_new_repos')) |
 | Installed GitHub Apps | $(read_summary '.organization_controls.github_apps.total') ($apps_with_write with write access, $(read_summary '.organization_controls.github_apps.all_repositories') scoped to all repositories) |
 | Organization webhooks | $(read_summary '.organization_controls.webhooks.total') ($webhooks_without_secret without a secret, $webhooks_insecure_ssl with SSL verification disabled) |
 

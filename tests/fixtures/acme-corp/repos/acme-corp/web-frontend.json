@@ -9,9 +9,10 @@
   "pushed_at": "2026-07-22T14:05:00Z",
   "web_commit_signoff_required": false,
   "security_and_analysis": {
-    "advanced_security": { "status": "disabled" },
+    "code_security": { "status": "enabled" },
     "secret_scanning": { "status": "enabled" },
-    "secret_scanning_push_protection": { "status": "disabled" },
+    "secret_scanning_push_protection": { "status": "enabled" },
+    "secret_scanning_delegated_bypass": { "status": "disabled" },
     "dependabot_security_updates": { "status": "enabled" }
   }
 }

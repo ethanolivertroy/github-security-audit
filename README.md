@@ -10,7 +10,7 @@ Point it at an organization. It pulls org- and repo-level security settings thro
 
 **Organization**
 - Mandatory 2FA, security managers actually assigned, audit log access
-- Owner count, base repository permission, default security settings for new repositories
+- Owner count, base repository permission, and the code security configuration new repositories inherit (including whether it is enforced rather than merely default)
 - Webhooks with no secret configured or SSL verification disabled
 - Installed GitHub Apps, how many hold write access, and how many are scoped to every repository
 - Org-level security policy presence
@@ -19,7 +19,8 @@ Point it at an organization. It pulls org- and repo-level security settings thro
 - Branch protection *and* rulesets, including organization rulesets inherited by the repository, and whether they are `active` rather than sitting in `evaluate` mode enforcing nothing
 - How strong the rule actually is: required approvals, code owner review, stale review dismissal, admin enforcement, signed commits, linear history
 - Repositories where only some long-lived branches are protected
-- Dependabot, code scanning, secret scanning and push protection enablement
+- Dependabot, code scanning, secret scanning, push protection, and whether a push protection bypass needs reviewer approval or is self-service
+- Both the legacy bundled `advanced_security` field and the `code_security` field that standalone GitHub Code Security repositories report through
 - CODEOWNERS and per-repository security policies
 
 **CI/CD**
@@ -43,7 +44,29 @@ Point it at an organization. It pulls org- and repo-level security settings thro
 - Control mappings and prioritized remediation
 - `summary.json` for dashboards and `evidence_manifest.txt` for chain of custody
 
-Supported frameworks: FedRAMP, NIST SP 800-53, NIST SP 800-161, SOC 2 Type II, HIPAA Security Rule, ISO 27001:2022, PCI-DSS v4.0.
+Supported frameworks: FedRAMP, NIST SP 800-53, NIST SP 800-161, SOC 2 Type II, HIPAA Security Rule, ISO 27001:2022, PCI-DSS v4.0.1.
+
+### Versions
+
+Compliance tooling goes stale quietly, so the versions behind the control
+mappings are stated rather than implied.
+
+| Standard | Version | Note |
+|----------|---------|------|
+| NIST SP 800-53 | Rev 5 | |
+| NIST SP 800-161 | Rev 1 Update 1 | |
+| SOC 2 | TSC 2017, 2022 points of focus | |
+| HIPAA Security Rule | Current rule | A January 2025 proposed rule would make MFA, encryption, and asset inventory mandatory. It is not final, so reports score against the rule in force. |
+| ISO/IEC 27001 | 2022 | 2013 certificates expired 31 October 2025 |
+| PCI DSS | v4.0.1 | v4.0 retired 31 December 2024; the 51 future-dated requirements have been mandatory since 31 March 2025 |
+
+On the GitHub side, Advanced Security was unbundled on 1 April 2025 into
+**Code Security** and **Secret Protection**, so a repository may report
+entitlement through `code_security` with `advanced_security` unset. Reading only
+the legacy field reports 0% code scanning coverage for any organization that
+bought or renewed after that date, which is why both are checked. The
+organization `*_enabled_for_new_repositories` fields were removed from the API
+on 21 April 2026, so this tool reads code security configurations instead.
 
 ### What it does not do
 
@@ -95,7 +118,7 @@ You need admin (or equivalent) access to the org. Security manager role helps fo
 | `soc2` | SOC 2 Trust Service Criteria |
 | `hipaa` | HIPAA Security Rule (45 CFR § 164.308–312) |
 | `iso27001` | ISO 27001:2022 Annex A |
-| `pci-dss` | PCI-DSS v4.0 |
+| `pci-dss` | PCI-DSS v4.0.1 |
 
 Each run writes a timestamped directory: `github_compliance_audit_<framework>_<timestamp>/`.
 
@@ -232,7 +255,7 @@ Practical rhythm:
 - [Org security settings](https://docs.github.com/en/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization)
 - [Branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 - [Security managers](https://docs.github.com/en/organizations/managing-peoples-access-to-your-organization-with-roles/managing-security-managers-in-your-organization)
-- [GitHub Advanced Security](https://docs.github.com/en/get-started/learning-about-github/about-github-advanced-security)
+- [Code Security](https://docs.github.com/en/code-security) · [Secret Protection](https://docs.github.com/en/code-security/secret-scanning) · [Code security configurations](https://docs.github.com/en/rest/code-security/configurations)
 - [Audit log](https://docs.github.com/en/organizations/keeping-your-organization-secure/managing-security-settings-for-your-organization/reviewing-the-audit-log-for-your-organization)
 
 **Supply chain**

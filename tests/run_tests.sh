@@ -137,6 +137,37 @@ assert_eq "evaluate-mode ruleset does not confer protection" "66" \
   "$(s '.coverage.branch_protection')"
 
 echo
+echo "== unbundled Code Security and Secret Protection =="
+# GHAS was split into standalone products on 1 April 2025. payments-api reports
+# through the legacy bundled advanced_security field; web-frontend reports
+# through code_security and has no advanced_security field at all. Both must
+# count, or every org that bought or renewed after the split reads as 0%.
+assert_eq "legacy advanced_security counts as code scanning" "true" \
+  "$(jq -r '.security_analysis.code_security_enabled' "$OUT/repositories/payments-api/analysis.json")"
+assert_eq "standalone code_security counts as code scanning" "true" \
+  "$(jq -r '.security_analysis.code_security_enabled' "$OUT/repositories/web-frontend/analysis.json")"
+assert_eq "repo with no advanced_security field is not a false negative" "unknown" \
+  "$(jq -r '.security_analysis.advanced_security' "$OUT/repositories/web-frontend/analysis.json")"
+assert_eq "code scanning coverage spans both product shapes" "66" "$(s '.coverage.code_scanning')"
+assert_eq "push protection coverage" "66" "$(s '.coverage.push_protection')"
+# Push protection without delegated bypass can be waved through unilaterally.
+assert_eq "push protection without review flagged" "1" \
+  "$(s '.counts.push_protection_without_review')"
+
+echo
+echo "== code security configurations =="
+# These replaced the org *_enabled_for_new_repositories fields, which GitHub
+# removed from the organization API on 21 April 2026.
+assert_eq "configurations listed" "1" \
+  "$(s '.organization_controls.code_security_configurations.configurations')"
+assert_eq "unenforced configuration not counted as enforced" "0" \
+  "$(s '.organization_controls.code_security_configurations.enforced')"
+assert_eq "default scope for new repositories reported" "private_and_internal" \
+  "$(s '.organization_controls.code_security_configurations.default_for_new_repos')"
+assert_eq "configuration read through the unbundled field name" "true" \
+  "$(s '.organization_controls.code_security_configurations.defaults_enable_code_security')"
+
+echo
 echo "== organization controls =="
 assert_eq "2FA requirement detected" "true" "$(s '.organization_controls.two_factor_required')"
 assert_eq "security managers counted, not just present" "1" "$(s '.organization_controls.security_managers')"

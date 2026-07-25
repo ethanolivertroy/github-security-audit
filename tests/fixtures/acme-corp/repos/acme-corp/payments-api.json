@@ -12,6 +12,7 @@
     "advanced_security": { "status": "enabled" },
     "secret_scanning": { "status": "enabled" },
     "secret_scanning_push_protection": { "status": "enabled" },
+    "secret_scanning_delegated_bypass": { "status": "enabled" },
     "dependabot_security_updates": { "status": "enabled" }
   }
 }
