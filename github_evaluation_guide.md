@@ -40,7 +40,6 @@ Each section pairs Admin UI steps with `gh api` checks and a short checklist. Su
    - [NIST 800-53 Controls](#nist-800-53-controls)
    - [NIST 800-161 Rev. 1 Update 1 Supply Chain Risk Management Controls](#nist-800-161-rev-1-update-1-supply-chain-risk-management-controls)
    - [Executive Order 14028 Requirements](#executive-order-14028-requirements)
-   - [Zero Trust Architecture Requirements](#zero-trust-architecture-requirements)
 
 ## Prerequisites
 
@@ -55,21 +54,47 @@ Before you start:
 3. **Tools**: `gh`, `curl`, `jq`, and a browser for the Admin UI
 4. **Your baseline**: the security requirements or control set you are evaluating against
 
+### Read this before you tick a box
+
+Several checks below depend on plan tier or token scope rather than on how well
+the organization is run:
+
+| Check | Requires |
+|-------|----------|
+| Organization audit log | GitHub Enterprise Cloud, org owner |
+| Audit log streaming | Enterprise account admin |
+| IP allow list, SAML | GitHub Enterprise Cloud |
+| Code scanning and secret scanning alerts | The feature enabled, plus `security_events` |
+| Dependabot alerts | The feature enabled, plus `repo` or `security_events` |
+| `security_and_analysis` fields on a repository | Admin on that repository |
+
+When one of these returns 404 or 403, record **not assessed** and the reason.
+Recording a pass because the command produced a file, or a failure because it
+did not, are the two most common ways this exercise produces a misleading
+report. The companion script marks these as `?` for the same reason.
+
 ## Framework Control Mapping
 
 GitHub features rarely map one-to-one to a single framework. Start here when you need the crosswalk:
 
 ### Universal Security Controls
 
-| GitHub Feature | FedRAMP/NIST | SOC 2 | HIPAA | ISO 27001 | PCI-DSS |
-|----------------|--------------|--------|--------|-----------|----------|
-| Two-Factor Authentication | AC-2, IA-2 | CC6.1, CC6.7 | 164.308(a)(3) | A.9.2 | Req 8.3 |
-| Branch Protection | CM-2, CM-3 | CC6.1, CC8.1 | 164.308(a)(4) | A.9.1, A.12.1 | Req 6.3.2 |
-| Code Scanning | SI-3, RA-5 | CC7.1 | 164.308(a)(1) | A.12.2, A.12.6 | Req 6.3.1 |
-| Audit Logging | AU-2, AU-3 | CC7.2, CC7.3 | 164.312(b) | A.12.4 | Req 10.2 |
-| Secret Scanning | SC-12, SI-4 | CC7.1 | 164.312(a)(2) | A.12.2 | Req 3.4 |
-| Access Control | AC-3, AC-6 | CC6.3 | 164.312(a)(1) | A.9.1, A.9.4 | Req 7.1 |
-| Vulnerability Management | RA-5, SI-2 | CC7.1 | 164.308(a)(1) | A.12.6 | Req 6.3.1 |
+ISO 27001 identifiers below follow the **2022** revision (A.5 organizational,
+A.6 people, A.7 physical, A.8 technological). If your ISMS documentation still
+uses the 2013 A.5-A.18 structure, map through the transition annex before
+quoting these.
+
+| GitHub Feature | FedRAMP/NIST | SOC 2 | HIPAA | ISO 27001:2022 | PCI-DSS v4.0 |
+|----------------|--------------|--------|--------|----------------|----------|
+| Two-Factor Authentication | AC-2, IA-2 | CC6.1, CC6.7 | 164.308(a)(3) | A.5.17, A.8.5 | Req 8.3, 8.4 |
+| Branch Protection / Rulesets | CM-2, CM-3, CM-5 | CC6.1, CC8.1 | 164.308(a)(4) | A.8.4, A.8.32 | Req 6.5.1 |
+| Code Scanning | SI-3, RA-5 | CC7.1 | 164.308(a)(1) | A.8.8, A.8.28 | Req 6.2.1, 11.3.1 |
+| Audit Logging | AU-2, AU-3, AU-12 | CC7.2, CC7.3 | 164.312(b) | A.8.15, A.8.16 | Req 10.2 |
+| Secret Scanning | SC-12, SI-4 | CC7.1 | 164.312(a)(2) | A.8.12 | Req 3.3, 8.3.1 |
+| Access Control | AC-3, AC-6 | CC6.3 | 164.312(a)(1) | A.5.15, A.5.18, A.8.3 | Req 7.2 |
+| Vulnerability Management | RA-5, SI-2 | CC7.1 | 164.308(a)(1) | A.8.8 | Req 6.3.1, 6.3.3 |
+| SBOM and Provenance | SR-4, SR-11 | CC8.1 | 164.312(c)(1) | A.8.30 | Req 6.3.2 |
+| Pinned Actions | CM-7, SR-5 | CC8.1 | n/a | A.8.28 | Req 6.2.4 |
 
 ### Framework-Specific Requirements
 
@@ -84,10 +109,8 @@ GitHub features rarely map one-to-one to a single framework. Start here when you
 - **100% Requirements**: Branch protection, audit logging, and encryption are mandatory
 
 #### ISO 27001:2022
-- **A.5**: Organizational controls → Security policies, roles
-- **A.8**: Asset management → Repository inventory, CODEOWNERS
-- **A.9**: Access control → Authentication, authorization
-- **A.12**: Operations security → Monitoring, vulnerability management
+- **A.5 Organizational**: A.5.1 policies, A.5.2 roles, A.5.9 asset inventory, A.5.15 access control, A.5.17 authentication information
+- **A.8 Technological**: A.8.2 privileged access, A.8.4 access to source code, A.8.8 technical vulnerabilities, A.8.12 data leakage prevention, A.8.15 logging, A.8.25 secure development lifecycle, A.8.28 secure coding, A.8.30 outsourced development, A.8.32 change management
 
 #### PCI-DSS v4.0
 - **Requirements 1-2**: Network Security → Repository access controls
@@ -104,8 +127,8 @@ GitHub features rarely map one-to-one to a single framework. Start here when you
 - **FedRAMP/NIST**: AC-2, AC-2(1), AC-2(4)
 - **SOC 2**: CC6.1, CC6.2
 - **HIPAA**: 164.308(a)(3), 164.308(a)(4)
-- **ISO 27001**: A.9.2
-- **PCI-DSS**: Req 7.1, 8.1
+- **ISO 27001:2022**: A.5.16, A.5.18
+- **PCI-DSS v4.0**: Req 7.2, 8.2
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → People**
@@ -153,8 +176,15 @@ gh api orgs/$GH_ORG/teams --paginate > org_teams.json
 TEAM_SLUG="your-team-slug"
 gh api orgs/$GH_ORG/teams/$TEAM_SLUG/repos > team_repos.json
 
-# Check base permissions
-gh api orgs/$GH_ORG/settings/security_analysis > org_security_settings.json
+# Base permissions and the security defaults applied to new repositories are
+# fields on the organization payload, not a separate settings endpoint.
+gh api orgs/$GH_ORG --jq '{
+  default_repository_permission,
+  members_can_create_public_repositories,
+  advanced_security_enabled_for_new_repositories,
+  secret_scanning_enabled_for_new_repositories,
+  secret_scanning_push_protection_enabled_for_new_repositories
+}' > org_security_settings.json
 ```
 
 #### Requirements Checklist
@@ -172,12 +202,21 @@ gh api orgs/$GH_ORG/settings/security_analysis > org_security_settings.json
 3. Check if IP allow list enforcement is enabled
 
 #### API Verification
-```bash
-# Get IP allow list entries
-gh api orgs/$GH_ORG/security/ip_allow_list > ip_allow_list.json
 
-# Check if IP allow list is enabled
-gh api orgs/$GH_ORG | jq '.ip_allow_list_enabled_for_installed_apps, .ip_allow_list_enabled' > ip_allow_list_status.json
+IP allow lists are exposed only through GraphQL; there is no REST endpoint for
+them, so a `gh api orgs/.../security/ip_allow_list` call will always 404.
+
+```bash
+gh api graphql -f owner="$GH_ORG" -f query='
+  query($owner: String!) {
+    organization(login: $owner) {
+      ipAllowListEnabledSetting
+      ipAllowListForInstalledAppsEnabledSetting
+      ipAllowListEntries(first: 100) {
+        nodes { allowListValue name isActive }
+      }
+    }
+  }' > ip_allow_list.json
 ```
 
 #### Requirements Checklist
@@ -193,8 +232,8 @@ gh api orgs/$GH_ORG | jq '.ip_allow_list_enabled_for_installed_apps, .ip_allow_l
 - **FedRAMP/NIST**: IA-2, IA-2(1), IA-5
 - **SOC 2**: CC6.1, CC6.7
 - **HIPAA**: 164.308(a)(3), 164.312(a)(1)
-- **ISO 27001**: A.9.2, A.9.4
-- **PCI-DSS**: Req 8.3, 8.4
+- **ISO 27001:2022**: A.5.17, A.8.5
+- **PCI-DSS v4.0**: Req 8.3, 8.4
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → Authentication security**
@@ -208,8 +247,23 @@ gh api orgs/$GH_ORG | jq '.ip_allow_list_enabled_for_installed_apps, .ip_allow_l
 # Check if 2FA is required
 gh api orgs/$GH_ORG | jq '.two_factor_requirement_enabled' > two_factor_required.json
 
-# Check SAML settings if applicable
-gh api orgs/$GH_ORG/saml > saml_settings.json 2>/dev/null || echo "SAML settings not available"
+# SAML configuration is GraphQL-only; there is no orgs/{org}/saml REST endpoint.
+gh api graphql -f owner="$GH_ORG" -f query='
+  query($owner: String!) {
+    organization(login: $owner) {
+      samlIdentityProvider {
+        ssoUrl
+        issuer
+        digestMethod
+        signatureMethod
+        externalIdentities(first: 1) { totalCount }
+      }
+    }
+  }' > saml_settings.json
+
+# SCIM-provisioned identities, if the org uses them.
+gh api "scim/v2/organizations/$GH_ORG/Users" > scim_users.json 2>/dev/null \
+  || echo "SCIM not configured or token lacks admin:org scope"
 ```
 
 #### Requirements Checklist
@@ -225,8 +279,8 @@ gh api orgs/$GH_ORG/saml > saml_settings.json 2>/dev/null || echo "SAML settings
 - **FedRAMP/NIST**: AU-2, AU-3, AU-12
 - **SOC 2**: CC7.2, CC7.3
 - **HIPAA**: 164.312(b) (Required)
-- **ISO 27001**: A.12.4
-- **PCI-DSS**: Req 10.2, 10.3
+- **ISO 27001:2022**: A.8.15, A.8.16
+- **PCI-DSS v4.0**: Req 10.2, 10.3
 
 #### Admin UI Steps
 1. Navigate to **Organization Settings → Audit log**
@@ -235,14 +289,23 @@ gh api orgs/$GH_ORG/saml > saml_settings.json 2>/dev/null || echo "SAML settings
 4. Review log export settings if configured
 
 #### API Verification
-```bash
-# Get sample of audit log entries
-gh api orgs/$GH_ORG/audit-log --paginate --limit 100 > audit_log_sample.json
 
-# Check for enterprise audit log streaming if applicable
-if gh api enterprises > /dev/null 2>&1; then
-  ENTERPRISE=$(gh api enterprises --jq '.[0].slug')
-  gh api enterprises/$ENTERPRISE/audit-log-streaming > audit_log_streaming.json 2>/dev/null || echo "Enterprise audit log streaming not configured"
+The audit log API requires GitHub Enterprise Cloud and an owner-scoped token.
+On any other plan it returns 404, which is a finding about your plan rather
+than about your logging hygiene. Record which of the two you are looking at.
+
+```bash
+# Sample of audit log entries. gh api has no --limit flag; page size is a
+# query parameter.
+gh api "orgs/$GH_ORG/audit-log?per_page=100" > audit_log_sample.json \
+  || echo "Audit log unavailable: requires Enterprise Cloud and an org owner token"
+
+# Audit log streaming is configured at the enterprise level. There is no API to
+# discover your enterprise slug from an org, so supply it.
+ENTERPRISE="${GH_ENTERPRISE:-}"
+if [ -n "$ENTERPRISE" ]; then
+  gh api "enterprises/$ENTERPRISE/audit-log/streams" > audit_log_streaming.json \
+    || echo "No audit log streams configured, or token lacks enterprise admin"
 fi
 ```
 
@@ -267,23 +330,41 @@ Do not try to click through every repo on day one. Pick a representative sample 
 5. Check restrictions on force pushes and deletions
 
 #### API Verification
+
+Classic branch protection and rulesets are two different mechanisms that
+satisfy the same controls. A repository can be fully governed by an active
+ruleset and still return 404 for the protection endpoint, so check both before
+recording a gap.
+
 ```bash
 # For each repository
 REPO="your-repo-name"
 
-# Get branch protection rules for default branch
-DEFAULT_BRANCH=$(gh api repos/$GH_ORG/$REPO | jq -r '.default_branch')
-gh api repos/$GH_ORG/$REPO/branches/$DEFAULT_BRANCH/protection > branch_protection.json
+# Classic branch protection on the default branch
+DEFAULT_BRANCH=$(gh api repos/$GH_ORG/$REPO --jq '.default_branch')
+gh api "repos/$GH_ORG/$REPO/branches/$DEFAULT_BRANCH/protection" > branch_protection.json \
+  || echo "No classic branch protection; check rulesets below"
+
+# Repository rulesets, and the org-level rulesets that apply to this repository
+gh api "repos/$GH_ORG/$REPO/rulesets" > repo_rulesets.json
+gh api "repos/$GH_ORG/$REPO/rules/branches/$DEFAULT_BRANCH" > effective_branch_rules.json
+gh api "orgs/$GH_ORG/rulesets" > org_rulesets.json
 ```
 
+`repos/{owner}/{repo}/rules/branches/{branch}` is the most useful of the three:
+it returns the rules actually in effect on that branch from every source, which
+is the question the control is asking.
+
 #### Requirements Checklist
-- [ ] Default branch has protection rules enabled
+- [ ] Default branch is governed by classic protection or an **active** ruleset (`enforcement: active`, not `evaluate`)
 - [ ] Pull requests are required for changes
 - [ ] Required number of reviewers is specified (minimum 1)
+- [ ] Code owner review is required, not merely a CODEOWNERS file existing
 - [ ] Status checks are required before merging
 - [ ] Branch is protected against force pushes
 - [ ] Branch deletion protection is enabled
 - [ ] Dismissal of stale approvals is enabled
+- [ ] Enforcement applies to administrators, or bypass actors are documented and justified
 
 ### Code Ownership (AC-5, AC-6)
 
@@ -438,11 +519,18 @@ gh api repos/$GH_ORG/$REPO/contents/$WORKFLOW_PATH > workflow_content.json 2>/de
 
 #### API Verification
 ```bash
-# Check dependency review enforcement
-gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.dependency_review_enforcement_level' > dependency_review.json
+# Dependency review is enforced by running the dependency-review-action as a
+# required status check; there is no repository setting that reports it.
+gh api "repos/$GH_ORG/$REPO/contents/.github/workflows" --jq '.[].path' \
+  | while read -r wf; do
+      gh api "repos/$GH_ORG/$REPO/contents/$wf" \
+        -H "Accept: application/vnd.github.raw" \
+        | grep -l "dependency-review-action" - > /dev/null && echo "$wf"
+    done > dependency_review_workflows.txt
 
-# Check status checks required for merging
-gh api repos/$GH_ORG/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks > required_status_checks.json 2>/dev/null || echo "No required status checks"
+# Status checks required for merging
+gh api "repos/$GH_ORG/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
+  > required_status_checks.json 2>/dev/null || echo "No required status checks"
 ```
 
 #### Requirements Checklist
@@ -467,14 +555,21 @@ Dependencies, builds, and artifacts are where many GitHub assessments get thin. 
 
 #### API Verification
 ```bash
-# Check dependency review settings
-gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.dependency_review_enforcement_level' > dependency_review.json
+# Dependabot version updates configuration
+gh api "repos/$GH_ORG/$REPO/contents/.github/dependabot.yml" \
+  -H "Accept: application/vnd.github.raw" > dependabot_config.yml 2>/dev/null \
+  || echo "No Dependabot configuration found"
 
-# Check for Dependabot configuration file
-gh api repos/$GH_ORG/$REPO/contents/.github/dependabot.yml > dependabot_config.json 2>/dev/null || echo "No Dependabot configuration found"
+# Dependabot security updates and alert enablement
+gh api "repos/$GH_ORG/$REPO" \
+  --jq '.security_and_analysis.dependabot_security_updates.status' > dependabot_security_updates.json
+gh api "repos/$GH_ORG/$REPO/vulnerability-alerts" > /dev/null 2>&1 \
+  && echo "enabled" > dependabot_alerts_enabled.txt \
+  || echo "disabled" > dependabot_alerts_enabled.txt
 
-# Check dependency graph availability
-gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.dependency_graph.status' > dependency_graph.json
+# The dependency graph itself, as a live SBOM
+gh api "repos/$GH_ORG/$REPO/dependency-graph/sbom" > dependency_graph_sbom.json 2>/dev/null \
+  || echo "Dependency graph not enabled for this repository"
 ```
 
 #### Requirements Checklist
@@ -497,18 +592,26 @@ gh api repos/$GH_ORG/$REPO | jq '.security_and_analysis.dependency_graph.status'
 
 #### API Verification
 ```bash
-# Check for SBOM workflow or configuration
-gh api repos/$GH_ORG/$REPO/contents/.github/workflows | jq '.[] | select(.name | contains("sbom"))' > sbom_workflow.json 2>/dev/null || echo "No SBOM workflow found"
+# GitHub can export an SPDX SBOM from the dependency graph directly. This is
+# the fastest way to answer "is an SBOM available for this repository at all".
+gh api "repos/$GH_ORG/$REPO/dependency-graph/sbom" > github_generated_sbom.json 2>/dev/null \
+  || echo "Dependency graph SBOM unavailable"
 
-# Check specific SBOM tools in use (e.g., CycloneDX, SPDX, Syft)
-for workflow in $(gh api repos/$GH_ORG/$REPO/contents/.github/workflows --jq '.[].path'); do
-  gh api repos/$GH_ORG/$REPO/contents/$workflow --raw | grep -i -E "cyclonedx|spdx|syft|sbom-action" > sbom_tools.txt || echo "No SBOM tools found in $workflow"
-done
+# SBOM tooling in the workflows themselves. Matching on workflow *names* misses
+# a release workflow that happens to generate an SBOM, so read the contents.
+gh api "repos/$GH_ORG/$REPO/contents/.github/workflows" --jq '.[].path' \
+  | while read -r wf; do
+      if gh api "repos/$GH_ORG/$REPO/contents/$wf" \
+           -H "Accept: application/vnd.github.raw" \
+           | grep -qiE "cyclonedx|spdx|syft|sbom-action|attest-sbom"; then
+        echo "$wf"
+      fi
+    done > sbom_workflows.txt
 
-# Check for SBOM artifacts in releases
-LATEST_RELEASE=$(gh api repos/$GH_ORG/$REPO/releases/latest 2>/dev/null | jq -r '.id' 2>/dev/null) || echo "No releases found"
-if [ "$LATEST_RELEASE" != "No releases found" ]; then
-  gh api repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE/assets | jq '.[] | select(.name | contains("sbom") or .name | contains("cyclonedx") or .name | contains("spdx"))' > sbom_artifacts.json
+# SBOM artifacts attached to the latest release
+if LATEST_RELEASE=$(gh api "repos/$GH_ORG/$REPO/releases/latest" --jq '.id' 2>/dev/null); then
+  gh api "repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE/assets" \
+    --jq '[.[] | select(.name | test("sbom|cyclonedx|spdx"; "i"))]' > sbom_artifacts.json
 fi
 ```
 
@@ -535,18 +638,31 @@ fi
 
 #### API Verification
 ```bash
-# Check for signing configurations in workflows
-gh api repos/$GH_ORG/$REPO/contents/.github/workflows | jq '.[] | select(.name | contains("sign") or .name | contains("verify"))' > signing_workflows.json 2>/dev/null || echo "No signing workflows found"
+# Signing and attestation steps in workflow contents
+gh api "repos/$GH_ORG/$REPO/contents/.github/workflows" --jq '.[].path' \
+  | while read -r wf; do
+      if gh api "repos/$GH_ORG/$REPO/contents/$wf" \
+           -H "Accept: application/vnd.github.raw" \
+           | grep -qiE "cosign|sigstore|keyless|attest-build-provenance|slsa-framework"; then
+        echo "$wf"
+      fi
+    done > signing_workflows.txt
 
-# Look for Cosign or Sigstore in workflow contents
-for workflow in $(gh api repos/$GH_ORG/$REPO/contents/.github/workflows --jq '.[].path'); do
-  gh api repos/$GH_ORG/$REPO/contents/$workflow --raw | grep -i -E "cosign|sigstore|keyless" > cosign_usage.txt || echo "No Cosign usage found in $workflow"
-done
-
-# Check for signature verification on releases
-if [ "$LATEST_RELEASE" != "No releases found" ]; then
-  gh api repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE | jq '.assets[] | select(.name | contains(".sig") or .name | contains(".asc") or .name | contains("sbom"))' > signature_artifacts.json
+# Signature and provenance artifacts on the latest release
+if LATEST_RELEASE=$(gh api "repos/$GH_ORG/$REPO/releases/latest" --jq '.id' 2>/dev/null); then
+  gh api "repos/$GH_ORG/$REPO/releases/$LATEST_RELEASE/assets" \
+    --jq '[.[] | select(.name | test("\\.(sig|asc|pem|sigstore|intoto\\.jsonl)$"))]' \
+    > signature_artifacts.json
 fi
+
+# Build provenance attestations stored by GitHub, looked up by artifact digest.
+# This is the strongest single piece of evidence for SR-4 and SR-11.
+ARTIFACT_DIGEST="sha256:<digest of a published artifact>"
+gh api "repos/$GH_ORG/$REPO/attestations/$ARTIFACT_DIGEST" > attestations.json 2>/dev/null \
+  || echo "No attestation stored for that digest"
+
+# Or verify end to end, which also checks the signature chain:
+#   gh attestation verify <artifact-path> --repo "$GH_ORG/$REPO"
 ```
 
 #### Requirements Checklist
@@ -559,6 +675,95 @@ fi
 - [ ] Keyless signing is implemented where appropriate (Sigstore)
 - [ ] Signature verification is automated in deployment pipelines
 - [ ] Signature format follows industry standards
+
+### Build Provenance and Attestation (SR-4, SR-9, SR-11)
+
+Signing proves an artifact was not altered. Provenance proves *where it came
+from*: which repository, which workflow, which commit, on which runner. EO 14028
+and SLSA both ask for the second, and an assessor who accepts a `.sig` file as
+provenance evidence has accepted the wrong thing.
+
+#### Admin UI Steps
+1. Open a recent release and check for an attestation badge or `.intoto.jsonl` asset
+2. Navigate to the repository's **Actions → Attestations** view, if present
+3. Open the release workflow and confirm it requests `id-token: write` and `attestations: write`
+4. Confirm the build runs on a hosted runner or a documented, hardened self-hosted runner
+5. Check whether consumers actually verify provenance before deploying
+
+#### API Verification
+```bash
+# Workflows that produce provenance
+gh api "repos/$GH_ORG/$REPO/contents/.github/workflows" --jq '.[].path' \
+  | while read -r wf; do
+      gh api "repos/$GH_ORG/$REPO/contents/$wf" -H "Accept: application/vnd.github.raw" \
+        > "/tmp/$(basename "$wf")"
+      if grep -qE "attest-build-provenance|attest-sbom|slsa-github-generator" "/tmp/$(basename "$wf")"; then
+        echo "provenance: $wf"
+        # The workflow must also grant the token that signs the attestation.
+        grep -qE "id-token:[[:space:]]*write" "/tmp/$(basename "$wf")" \
+          || echo "  WARNING: no id-token: write permission, attestation will fail"
+      fi
+    done > provenance_workflows.txt
+
+# Stored attestations for a published artifact
+ARTIFACT_DIGEST="sha256:<digest>"
+gh api "repos/$GH_ORG/$REPO/attestations/$ARTIFACT_DIGEST" \
+  --jq '.attestations[].bundle.dsseEnvelope.payloadType' > attestation_types.json 2>/dev/null \
+  || echo "No attestation for that digest"
+
+# End-to-end verification, including the certificate chain and the identity of
+# the workflow that produced the artifact
+gh attestation verify ./downloaded-artifact --repo "$GH_ORG/$REPO" --format json \
+  > attestation_verification.json
+```
+
+#### Requirements Checklist
+- [ ] Release workflows produce build provenance attestations
+- [ ] Attestation subject digests match the artifacts actually published
+- [ ] Workflows grant `id-token: write` and `attestations: write`, and nothing broader
+- [ ] Provenance records the source repository, commit, and workflow
+- [ ] Consumers verify provenance before deployment, and the failure path blocks the deploy
+- [ ] Self-hosted runners used for release builds are ephemeral and documented
+- [ ] Verification identity is pinned to the expected workflow, not just the repository
+
+### Supply Chain Incident Response (SR-8, SR-13)
+
+The controls above are preventative. SR-8 and SR-13 ask what happens on the day
+a dependency you ship is found to be compromised: how you learn about it, how
+fast you can tell whether you are affected, and how you tell your own consumers.
+
+#### Admin UI Steps
+1. Navigate to **Security → Advisories** and review any drafted or published advisories
+2. Check **Organization Settings → Notifications** for who receives security alerts
+3. Confirm Dependabot alert recipients are a monitored team, not an individual
+4. Review the incident response plan for a supply chain compromise scenario specifically
+5. Confirm you can answer "which of our releases contain this package version" from stored SBOMs
+
+#### API Verification
+```bash
+# Published and draft security advisories for this repository
+gh api "repos/$GH_ORG/$REPO/security-advisories" > repository_advisories.json 2>/dev/null \
+  || echo "No advisories, or token lacks access"
+
+# Organization-wide view of open alerts, which is the blast-radius question
+gh api "orgs/$GH_ORG/dependabot/alerts?state=open&severity=critical,high" --paginate \
+  --jq '[.[] | {repo: .repository.name, package: .dependency.package.name,
+                severity: .security_advisory.severity, created: .created_at}]' \
+  > org_critical_dependency_alerts.json
+
+# Time-to-remediate evidence: how long open findings have been open
+gh api "orgs/$GH_ORG/dependabot/alerts?state=open" --paginate \
+  --jq 'map(.created_at) | sort | first' > oldest_open_alert.txt
+```
+
+#### Requirements Checklist
+- [ ] A named team, not an individual, receives Dependabot and advisory notifications
+- [ ] Remediation windows are defined per severity and are actually met (see `summary.json` for past-due counts)
+- [ ] The incident response plan covers dependency and build system compromise, not only application breaches
+- [ ] Stored SBOMs let you answer which shipped releases contain an affected component
+- [ ] A process exists to publish advisories to downstream consumers
+- [ ] Notification agreements with critical suppliers are documented (SR-8)
+- [ ] Supply chain incidents are exercised, not just documented (SR-13)
 
 ## NIST Control Matrices
 
@@ -588,8 +793,10 @@ The following matrix maps key GitHub settings to NIST 800-53 controls:
 | **SI-2** | Flaw Remediation | Dependabot | Dependabot alerts, automated updates |
 | **SI-3** | Malicious Code Protection | Code scanning | CodeQL analysis, security scans |
 | **SI-4** | Information System Monitoring | Secret scanning | Secret scanning alerts, push protection |
-| **SR-3** | Supply Chain Protection | Dependency management | Dependency review enforcement |
-| **SR-4** | Component Authenticity | SBOMs, signing | SBOM generation, artifact signing |
+| **SR-3** | Supply Chain Controls and Processes | Dependency management | Dependency review enforcement |
+| **SR-4** | Provenance | SBOMs, attestation | SBOM generation, build provenance attestation |
+| **SR-5** | Acquisition Strategies, Tools, and Methods | Pinned actions | Third-party actions pinned to a commit SHA |
+| **SR-11** | Component Authenticity | Artifact signing | Signature and attestation verification |
 
 ### NIST 800-161 Rev. 1 Update 1 Supply Chain Risk Management Controls
 
@@ -695,10 +902,39 @@ For the machine-readable pass, run the companion script:
 
 ```bash
 # All frameworks
-./github_compliance_audit.sh <organization-name>
+./github_compliance_audit.sh "$GH_ORG"
 
 # One framework
-./github_compliance_audit.sh <organization-name> [fedramp|nist|soc2|hipaa|iso27001|pci-dss]
+./github_compliance_audit.sh "$GH_ORG" soc2
 ```
+
+The run writes `summary.json` alongside the markdown report. It is the faster
+way to answer most of the checklist questions above in bulk:
+
+```bash
+RUN=github_compliance_audit_all_20260725_120000
+
+# Repositories with no branch protection and no active ruleset
+jq -r 'select(.protected | not) | .name' "$RUN/repository_analysis.jsonl"
+
+# Repositories where alert data could not be collected, which are the ones the
+# checklists must not record as clean
+jq -r 'select(.alerts.dependabot.available and .alerts.code_scanning.available | not)
+       | .name' "$RUN/repository_analysis.jsonl"
+
+# Findings past their remediation window, by repository
+jq -r 'select(.alerts.dependabot.past_due > 0)
+       | "\(.name): \(.alerts.dependabot.past_due) past due,
+          oldest \(.alerts.dependabot.oldest_open_days) days"' \
+  "$RUN/repository_analysis.jsonl"
+
+# Unpinned third-party actions
+jq -r 'select(.supply_chain.actions_total > .supply_chain.actions_pinned_to_sha)
+       | "\(.name): \(.supply_chain.actions_pinned_to_sha)/\(.supply_chain.actions_total) pinned"' \
+  "$RUN/repository_analysis.jsonl"
+```
+
+Use the script for breadth and the sections above for the controls it cannot
+reach: process, intent, and anything that lives outside the API.
 
 Treat the script output as a draft evidence pack. This guide is where you confirm, challenge, and document what automation cannot assert.
