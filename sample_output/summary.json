@@ -13,6 +13,22 @@
   "organization_controls": {
     "two_factor_required": true,
     "security_managers": 1,
+    "owners": 2,
+    "members": 4,
+    "webhooks": {
+      "available": true,
+      "total": 2,
+      "without_secret": 1,
+      "insecure_ssl": 1,
+      "inactive": 0
+    },
+    "github_apps": {
+      "available": true,
+      "total": 3,
+      "with_write_access": 2,
+      "with_admin_access": 0,
+      "all_repositories": 2
+    },
     "default_repository_permission": "read",
     "members_can_create_public_repositories": null,
     "web_commit_signoff_required": false,
@@ -36,7 +52,23 @@
     "sbom": 33,
     "signing": 33,
     "attestation": 33,
-    "actions_pinned_to_sha": 66
+    "actions_pinned_to_sha": 66,
+    "workflows_with_explicit_permissions": 50,
+    "read_only_default_token": 66,
+    "restricted_actions_policy": 66
+  },
+  "not_assessed": {
+    "repositories_without_security_settings": 0,
+    "repositories_without_actions_config": 0,
+    "repositories_without_alert_data": 1
+  },
+  "hard_findings": {
+    "repositories_where_actions_can_approve_prs": 1,
+    "repositories_allowing_any_third_party_action": 1,
+    "approved_push_protection_bypasses": 1,
+    "organization_webhooks_without_secret": 1,
+    "organization_webhooks_with_ssl_verification_disabled": 1,
+    "installed_apps_with_write_access": 2
   },
   "counts": {
     "protected": 2,
@@ -53,7 +85,15 @@
     "signing": 1,
     "attestation": 1,
     "actions_total": 6,
-    "actions_pinned": 4
+    "actions_pinned": 4,
+    "workflows_total": 2,
+    "workflows_with_permissions": 1,
+    "read_only_default_token": 2,
+    "actions_can_approve_prs": 1,
+    "unrestricted_actions_policy": 1,
+    "actions_config_visible": 3,
+    "security_settings_visible": 3,
+    "push_protection_bypasses_approved": 1
   },
   "alerts": {
     "dependabot": {
@@ -78,8 +118,8 @@
     "repositories_without_visibility": 1
   },
   "score": {
-    "risk_score": 47,
-    "points_earned": 53,
+    "risk_score": 48,
+    "points_earned": 52,
     "compliance_level": "Medium",
     "breakdown": {
       "two_factor": 15,
@@ -90,7 +130,7 @@
       "dependency_monitoring": 3,
       "remediation_timeliness": 5,
       "ownership": 3,
-      "action_pinning": 3,
+      "workflow_hardening": 2,
       "provenance": 1
     }
   }

@@ -1,4 +1,4 @@
 {
-  "_audit_error": "Not found",
-  "_http_code": 404
+  "default_workflow_permissions": "read",
+  "can_approve_pull_request_reviews": false
 }

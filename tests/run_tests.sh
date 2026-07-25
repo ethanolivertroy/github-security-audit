@@ -159,6 +159,31 @@ assert_eq "signing detected from release assets" "33" "$(s '.coverage.signing')"
 assert_eq "codeowners found at both .github and root" "66" "$(s '.coverage.codeowners')"
 
 echo
+echo "== actions configuration =="
+# legacy-billing has a write-capable default token that can also approve PRs.
+assert_eq "read-only default token coverage" "66" "$(s '.coverage.read_only_default_token')"
+assert_eq "workflows with explicit permissions" "50" \
+  "$(s '.coverage.workflows_with_explicit_permissions')"
+assert_eq "unrestricted action policy detected" "66" "$(s '.coverage.restricted_actions_policy')"
+assert_eq "actions able to approve PRs flagged" "1" \
+  "$(s '.hard_findings.repositories_where_actions_can_approve_prs')"
+assert_eq "approved push protection bypass flagged" "1" \
+  "$(s '.hard_findings.approved_push_protection_bypasses')"
+
+echo
+echo "== organization access surface =="
+assert_eq "owners counted separately from members" "2" "$(s '.organization_controls.owners')"
+assert_eq "members counted" "4" "$(s '.organization_controls.members')"
+assert_eq "webhook without a secret flagged" "1" \
+  "$(s '.hard_findings.organization_webhooks_without_secret')"
+assert_eq "webhook with SSL verification off flagged" "1" \
+  "$(s '.hard_findings.organization_webhooks_with_ssl_verification_disabled')"
+assert_eq "write-capable apps counted" "2" \
+  "$(s '.hard_findings.installed_apps_with_write_access')"
+assert_eq "apps scoped to all repositories counted" "2" \
+  "$(s '.organization_controls.github_apps.all_repositories')"
+
+echo
 echo "== scoring =="
 risk="$(s '.score.risk_score')"
 if [ "$risk" -gt 0 ] && [ "$risk" -lt 100 ]; then
@@ -177,6 +202,11 @@ assert_contains "report generated" "Multi-Framework Compliance Report" "$REPORT"
 assert_contains "report warns about unreadable audit log" "audit log was not readable" "$REPORT"
 assert_contains "report warns about invisible alerts" "returned no alert data: 1" "$REPORT"
 assert_contains "report shows score breakdown" "Score breakdown" "$REPORT"
+assert_contains "report calls out actions approving PRs" \
+  "Repositories where GitHub Actions can approve pull requests: 1" "$REPORT"
+assert_contains "report calls out webhooks without a secret" \
+  "Organization webhooks with no secret configured: 1" "$REPORT"
+assert_contains "report shows the access surface" "Installed GitHub Apps" "$REPORT"
 assert_not_contains "no unexpanded variables in report" '$total_repos' "$REPORT"
 assert_not_contains "no raw jq paths in report" '.coverage.' "$REPORT"
 
@@ -233,6 +263,29 @@ for backend in parallel xargs; do
     fail "$backend backend completes" "summary.json" "audit aborted"
   fi
 done
+
+echo
+echo "== non-admin token =="
+# GitHub omits security_and_analysis for callers without repository admin, and
+# 403s the Actions endpoints. Neither is evidence that the features are off.
+OUT_LIMITED="$WORK_DIR/audit-limited"
+run_audit limited-org all "$OUT_LIMITED" > "$WORK_DIR/limited.log" 2>&1
+if [ -f "$OUT_LIMITED/summary.json" ]; then
+  assert_eq "invisible security settings are counted, not scored as disabled" "1" \
+    "$(jq -r '.not_assessed.repositories_without_security_settings' "$OUT_LIMITED/summary.json")"
+  assert_eq "invisible actions config is counted" "1" \
+    "$(jq -r '.not_assessed.repositories_without_actions_config' "$OUT_LIMITED/summary.json")"
+  # A repository whose token could not read the setting must not be reported as
+  # a repository that deliberately allows any third-party action.
+  assert_eq "unknown actions policy is not reported as unrestricted" "0" \
+    "$(jq -r '.hard_findings.repositories_allowing_any_third_party_action' "$OUT_LIMITED/summary.json")"
+  assert_contains "report explains the missing settings" \
+    "security settings were not visible" \
+    "$OUT_LIMITED/multi_framework_compliance_report.md"
+else
+  fail "limited token org handled" "summary.json" "audit aborted"
+  sed 's/^/       /' "$WORK_DIR/limited.log"
+fi
 
 echo
 echo "== empty organization =="

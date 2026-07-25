@@ -1,1 +1,23 @@
-[]
+[
+  {
+    "id": 1,
+    "name": "web",
+    "active": true,
+    "config": {
+      "url": "https://siem.acme-corp.example/github",
+      "content_type": "json",
+      "insecure_ssl": "0",
+      "secret": "********"
+    }
+  },
+  {
+    "id": 2,
+    "name": "web",
+    "active": true,
+    "config": {
+      "url": "https://legacy-chatops.acme-corp.example/hook",
+      "content_type": "form",
+      "insecure_ssl": "1"
+    }
+  }
+]

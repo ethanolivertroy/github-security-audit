@@ -432,14 +432,49 @@ summarize_repository() {
     fi
   fi
 
-  local security_analysis='{}'
+  # security_and_analysis is only returned to callers with admin permission on
+  # the repository. Absent fields mean "we were not allowed to look", which is
+  # not the same as the features being off.
+  local security_analysis='{"available":false,"advanced_security":"unknown","secret_scanning":"unknown","secret_scanning_push_protection":"unknown","dependabot_security_updates":"unknown"}'
   if api_ok "$repo_dir/info.json"; then
     security_analysis=$(jq '{
+      available: (.security_and_analysis != null),
       advanced_security: (.security_and_analysis.advanced_security.status // "unknown"),
       secret_scanning: (.security_and_analysis.secret_scanning.status // "unknown"),
       secret_scanning_push_protection: (.security_and_analysis.secret_scanning_push_protection.status // "unknown"),
       dependabot_security_updates: (.security_and_analysis.dependabot_security_updates.status // "unknown")
     }' "$repo_dir/info.json")
+  fi
+
+  # Actions configuration. A default GITHUB_TOKEN with write access, or an
+  # Actions run that can approve pull requests, undoes the review controls
+  # scored above, so these are collected and reported rather than just filed.
+  local actions='{"available":false,"enabled":null,"allowed_actions":"unknown","default_workflow_permissions":"unknown","can_approve_pull_request_reviews":null}'
+  if api_ok "$repo_dir/workflows/default_workflow_permissions.json"; then
+    actions=$(jq -n \
+      --slurpfile policy_in "$repo_dir/workflows/actions_permissions.json" \
+      --slurpfile token_in "$repo_dir/workflows/default_workflow_permissions.json" \
+      '($policy_in[0] // {}) as $policy
+       | ($token_in[0] // {}) as $token
+       | {
+           available: true,
+           enabled: ($policy.enabled // null),
+           allowed_actions: ($policy.allowed_actions // "unknown"),
+           default_workflow_permissions: ($token.default_workflow_permissions // "unknown"),
+           can_approve_pull_request_reviews: ($token.can_approve_pull_request_reviews // null)
+         }')
+  fi
+
+  # Push protection that is routinely bypassed is not push protection. Bypass
+  # requests are evidence for whether the control holds in practice.
+  local bypasses='{"available":false,"total":0,"approved":0,"pending":0}'
+  if api_ok "$repo_dir/push_protection_bypasses.json"; then
+    bypasses=$(jq '{
+      available: true,
+      total: length,
+      approved: ([.[] | select(.status == "approved" or .status == "completed")] | length),
+      pending: ([.[] | select(.status == "pending")] | length)
+    }' "$repo_dir/push_protection_bypasses.json")
   fi
 
   local codeowners=false
@@ -457,6 +492,8 @@ summarize_repository() {
     --argjson alerts "$alerts" \
     --argjson supply_chain "$supply_chain" \
     --argjson security_analysis "$security_analysis" \
+    --argjson actions "$actions" \
+    --argjson bypasses "$bypasses" \
     --argjson codeowners "$codeowners" \
     --argjson security_policy "$security_policy" \
     --argjson dependabot_alerts_enabled "$dependabot_alerts_enabled" \
@@ -475,6 +512,8 @@ summarize_repository() {
       rulesets: $rulesets,
       protected: ($protection.present or ($rulesets.active_branch_rulesets > 0)),
       security_analysis: $security_analysis,
+      actions: $actions,
+      push_protection_bypasses: $bypasses,
       dependabot_alerts_enabled: $dependabot_alerts_enabled,
       codeowners: $codeowners,
       security_policy: $security_policy,
@@ -786,10 +825,14 @@ mkdir -p "$OUTPUT_DIR/org_security"
 cp "$OUTPUT_DIR/organization_info.json" "$OUTPUT_DIR/org_security/org_details.json"
 
 api_call_paginated "orgs/$ORG_NAME/members" "$OUTPUT_DIR/org_security/members.json"
+# Owners hold irrevocable administrative access, so their number is an AC-6
+# measurement in its own right.
+api_call_paginated "orgs/$ORG_NAME/members?role=admin" "$OUTPUT_DIR/org_security/owners.json"
 api_call_paginated "orgs/$ORG_NAME/security-managers" "$OUTPUT_DIR/org_security/security_managers.json"
 api_call_paginated "orgs/$ORG_NAME/teams" "$OUTPUT_DIR/org_security/teams.json"
 api_call_paginated "orgs/$ORG_NAME/hooks" "$OUTPUT_DIR/org_security/webhooks.json"
-api_call_paginated "orgs/$ORG_NAME/installations" "$OUTPUT_DIR/org_security/github_apps.json"
+# This endpoint wraps its list in an object, so it is not paginated the same way.
+api_call_with_retry "orgs/$ORG_NAME/installations?per_page=100" "$OUTPUT_DIR/org_security/github_apps.json"
 
 # Audit log streaming is Enterprise Cloud only; a 404 here is a real finding
 # rather than a tooling error, so the status is preserved for the report.
@@ -858,6 +901,44 @@ api_ok "$OUTPUT_DIR/org_security/audit_log_sample.json" && audit_log_available=t
 org_security_policy=false
 api_ok "$OUTPUT_DIR/org_security/security_policy.json" && org_security_policy=true
 
+org_owners=0
+if api_ok "$OUTPUT_DIR/org_security/owners.json"; then
+  org_owners=$(jq 'if type == "array" then length else 0 end' "$OUTPUT_DIR/org_security/owners.json")
+fi
+org_members=0
+if api_ok "$OUTPUT_DIR/org_security/members.json"; then
+  org_members=$(jq 'if type == "array" then length else 0 end' "$OUTPUT_DIR/org_security/members.json")
+fi
+
+# A webhook without a secret accepts unauthenticated payloads, and one with SSL
+# verification disabled ships them in the clear. Both are AU-9 / SC-8 findings
+# that the evidence tree already contained but nothing ever read.
+org_webhooks='{"available":false,"total":0,"without_secret":0,"insecure_ssl":0,"inactive":0}'
+if api_ok "$OUTPUT_DIR/org_security/webhooks.json"; then
+  org_webhooks=$(jq '{
+    available: true,
+    total: length,
+    without_secret: ([.[] | select(.config.secret == null)] | length),
+    insecure_ssl: ([.[] | select((.config.insecure_ssl // "0") | tostring == "1")] | length),
+    inactive: ([.[] | select(.active == false)] | length)
+  }' "$OUTPUT_DIR/org_security/webhooks.json")
+fi
+
+# Installed Apps are third-party access to your source. Write-capable ones are
+# the supplier relationships SR-6 asks you to have assessed.
+org_apps='{"available":false,"total":0,"with_write_access":0,"with_admin_access":0,"all_repositories":0}'
+if api_ok "$OUTPUT_DIR/org_security/github_apps.json"; then
+  org_apps=$(jq '(.installations // []) as $apps | {
+    available: true,
+    total: ($apps | length),
+    with_write_access: ([$apps[] | select(
+      [.permissions // {} | to_entries[] | select(.value == "write")] | length > 0)] | length),
+    with_admin_access: ([$apps[] | select(
+      [.permissions // {} | to_entries[] | select(.value == "admin")] | length > 0)] | length),
+    all_repositories: ([$apps[] | select(.repository_selection == "all")] | length)
+  }' "$OUTPUT_DIR/org_security/github_apps.json")
+fi
+
 # The scoring model is intentionally explicit: every point is attributable to a
 # named control so a reviewer can argue with the weighting instead of guessing
 # at it. Weights sum to 100; risk score is 100 minus the points earned.
@@ -870,6 +951,10 @@ jq -s \
   --argjson security_managers "$security_managers_count" \
   --argjson audit_log_available "$audit_log_available" \
   --argjson org_security_policy "$org_security_policy" \
+  --argjson org_owners "$org_owners" \
+  --argjson org_members "$org_members" \
+  --argjson org_webhooks "$org_webhooks" \
+  --argjson org_apps "$org_apps" \
   --argjson include_archived "$([ "$INCLUDE_ARCHIVED" = "true" ] && echo true || echo false)" '
   def pct($n; $d): if $d == 0 then 0 else (($n * 100 / $d) | floor) end;
 
@@ -897,7 +982,15 @@ jq -s \
       signing: [$scored[] | select(.supply_chain.signing)] | length,
       attestation: [$scored[] | select(.supply_chain.attestation)] | length,
       actions_total: ([$scored[] | .supply_chain.actions_total] | add // 0),
-      actions_pinned: ([$scored[] | .supply_chain.actions_pinned_to_sha] | add // 0)
+      actions_pinned: ([$scored[] | .supply_chain.actions_pinned_to_sha] | add // 0),
+      workflows_total: ([$scored[] | .supply_chain.workflows] | add // 0),
+      workflows_with_permissions: ([$scored[] | .supply_chain.workflows_with_permissions] | add // 0),
+      read_only_default_token: [$scored[] | select(.actions.default_workflow_permissions == "read")] | length,
+      actions_can_approve_prs: [$scored[] | select(.actions.can_approve_pull_request_reviews == true)] | length,
+      unrestricted_actions_policy: [$scored[] | select(.actions.allowed_actions == "all")] | length,
+      actions_config_visible: [$scored[] | select(.actions.available)] | length,
+      security_settings_visible: [$scored[] | select(.security_analysis.available)] | length,
+      push_protection_bypasses_approved: ([$scored[] | .push_protection_bypasses.approved] | add // 0)
     } as $c
   | {
       dependabot: {
@@ -939,7 +1032,11 @@ jq -s \
         ($alerts.dependabot.past_due + $alerts.code_scanning.past_due + $alerts.secret_scanning.past_due) as $overdue
         | if $overdue == 0 then 10 elif $overdue <= 5 then 5 elif $overdue <= 20 then 2 else 0 end),
       ownership: ((pct($c.codeowners; $n) * 5 / 100) | floor),
-      action_pinning: ((pct($c.actions_pinned; $c.actions_total) * 5 / 100) | floor),
+      # Pinning is worth 3 and a read-only default GITHUB_TOKEN 2: a workflow
+      # token with write access hands every third-party action commit rights.
+      workflow_hardening: (
+        ((pct($c.actions_pinned; $c.actions_total) * 3 / 100) | floor) +
+        ((pct($c.read_only_default_token; $n) * 2 / 100) | floor)),
       provenance: ((pct($c.sbom; $n) * 3 / 100) + (pct($c.signing; $n) * 2 / 100) | floor)
     } as $earned
   | ($earned | to_entries | map(.value) | add) as $points
@@ -959,6 +1056,10 @@ jq -s \
       organization_controls: {
         two_factor_required: ($o.two_factor_requirement_enabled // false),
         security_managers: $security_managers,
+        owners: $org_owners,
+        members: $org_members,
+        webhooks: $org_webhooks,
+        github_apps: $org_apps,
         default_repository_permission: ($o.default_repository_permission // "unknown"),
         members_can_create_public_repositories: ($o.members_can_create_public_repositories // null),
         web_commit_signoff_required: ($o.web_commit_signoff_required // false),
@@ -982,7 +1083,26 @@ jq -s \
         sbom: pct($c.sbom; $n),
         signing: pct($c.signing; $n),
         attestation: pct($c.attestation; $n),
-        actions_pinned_to_sha: pct($c.actions_pinned; $c.actions_total)
+        actions_pinned_to_sha: pct($c.actions_pinned; $c.actions_total),
+        workflows_with_explicit_permissions: pct($c.workflows_with_permissions; $c.workflows_total),
+        read_only_default_token: pct($c.read_only_default_token; $n),
+        restricted_actions_policy: pct($n - $c.unrestricted_actions_policy; $n)
+      },
+      not_assessed: {
+        repositories_without_security_settings: ($n - $c.security_settings_visible),
+        repositories_without_actions_config: ($n - $c.actions_config_visible),
+        repositories_without_alert_data: $alerts.repositories_without_visibility
+      },
+      # Findings that are unambiguous regardless of framework: a workflow token
+      # that can approve pull requests defeats required review, and an approved
+      # push protection bypass means a secret reached the repository anyway.
+      hard_findings: {
+        repositories_where_actions_can_approve_prs: $c.actions_can_approve_prs,
+        repositories_allowing_any_third_party_action: $c.unrestricted_actions_policy,
+        approved_push_protection_bypasses: $c.push_protection_bypasses_approved,
+        organization_webhooks_without_secret: $org_webhooks.without_secret,
+        organization_webhooks_with_ssl_verification_disabled: $org_webhooks.insecure_ssl,
+        installed_apps_with_write_access: $org_apps.with_write_access
       },
       counts: $c,
       alerts: $alerts,
@@ -1019,6 +1139,18 @@ sbom_percentage=$(read_summary '.coverage.sbom')
 signing_percentage=$(read_summary '.coverage.signing')
 attestation_percentage=$(read_summary '.coverage.attestation')
 pinning_percentage=$(read_summary '.coverage.actions_pinned_to_sha')
+workflow_permissions_percentage=$(read_summary '.coverage.workflows_with_explicit_permissions')
+read_only_token_percentage=$(read_summary '.coverage.read_only_default_token')
+restricted_actions_percentage=$(read_summary '.coverage.restricted_actions_policy')
+
+org_owners=$(read_summary '.organization_controls.owners')
+org_members=$(read_summary '.organization_controls.members')
+actions_can_approve_prs=$(read_summary '.hard_findings.repositories_where_actions_can_approve_prs')
+approved_bypasses=$(read_summary '.hard_findings.approved_push_protection_bypasses')
+webhooks_without_secret=$(read_summary '.hard_findings.organization_webhooks_without_secret')
+webhooks_insecure_ssl=$(read_summary '.hard_findings.organization_webhooks_with_ssl_verification_disabled')
+apps_with_write=$(read_summary '.hard_findings.installed_apps_with_write_access')
+settings_not_visible=$(read_summary '.not_assessed.repositories_without_security_settings')
 
 total_dependabot_alerts=$(read_summary '.alerts.dependabot.open')
 dependabot_critical=$(read_summary '.alerts.dependabot.critical')
@@ -1083,7 +1215,66 @@ EOF
 EOF
   fi
 
+  if [ "$settings_not_visible" -gt 0 ]; then
+    cat >> "$REPORT_FILE" << EOF
+- **Repositories whose security settings were not visible: $settings_not_visible.** GitHub returns
+  \`security_and_analysis\` only to callers with admin permission on the repository, so
+  scanning coverage below understates reality for those. Re-run with an owner token
+  before treating the gap as real.
+EOF
+  fi
+
+  report_hard_findings
   echo >> "$REPORT_FILE"
+}
+
+# Configuration that defeats another control outright. These are framework
+# independent, so they are rendered identically in every report.
+report_hard_findings() {
+  local any=false
+
+  {
+    echo
+    echo "### Configuration that undermines another control"
+    echo
+  } >> "$REPORT_FILE"
+
+  if [ "$actions_can_approve_prs" -gt 0 ]; then
+    echo "- **Repositories where GitHub Actions can approve pull requests: $actions_can_approve_prs.** A workflow can satisfy the review it was supposed to be checked by, which voids separation of duties (AC-5, PCI 6.5.1)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$read_only_token_percentage" -lt 100 ]; then
+    echo "- **The default \`GITHUB_TOKEN\` has write access in $(( 100 - read_only_token_percentage ))% of repositories.** Every third-party action in those workflows inherits commit rights (CM-7, SR-5)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$restricted_actions_percentage" -lt 100 ]; then
+    echo "- **Any third-party Action may run in $(( 100 - restricted_actions_percentage ))% of repositories.** There is no supplier gate on code executing in your CI (SR-5, SR-6)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$approved_bypasses" -gt 0 ]; then
+    echo "- **Approved push protection bypasses: $approved_bypasses.** A secret reached the repository despite push protection being enabled. Treat those secrets as exposed and rotate them." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$webhooks_without_secret" -gt 0 ]; then
+    echo "- **Organization webhooks with no secret configured: $webhooks_without_secret.** Their receivers cannot authenticate payloads as coming from GitHub (SC-8, AU-9)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$webhooks_insecure_ssl" -gt 0 ]; then
+    echo "- **Organization webhooks with SSL verification disabled: $webhooks_insecure_ssl.** Payloads are deliverable to an interceptor (SC-8)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$apps_with_write" -gt 0 ]; then
+    echo "- **Installed GitHub Apps with write access: $apps_with_write.** Each is a supplier holding commit rights and needs a documented assessment (SR-6, AC-6)." >> "$REPORT_FILE"
+    any=true
+  fi
+  if [ "$org_owners" -gt 5 ]; then
+    echo "- **Organization owners: $org_owners.** Owner access cannot be scoped down, so review whether all of them need it (AC-6)." >> "$REPORT_FILE"
+    any=true
+  fi
+
+  if [ "$any" != "true" ]; then
+    echo "None detected." >> "$REPORT_FILE"
+  fi
 }
 
 # Generate SOC2 report
@@ -1386,6 +1577,9 @@ input to an assessment, never a substitute for one.
 | Open findings past due | $past_due_alerts | 0 | 0 | 0 | 0 | 0 |
 | Audit log accessible | $audit_log_available | Required | Required | Required | Required | Required |
 | Actions pinned to a commit SHA | $pinning_percentage% | 80%+ | Recommended | Recommended | 80%+ | Recommended |
+| Read-only default workflow token | $read_only_token_percentage% | 100% | Recommended | Recommended | 100% | 100% |
+| Workflows with explicit permissions | $workflow_permissions_percentage% | 80%+ | Recommended | Recommended | 80%+ | Recommended |
+| Third-party Action policy restricted | $restricted_actions_percentage% | Required | Recommended | Recommended | Required | Required |
 | SBOM generation | $sbom_percentage% | 50%+ | N/A | N/A | 60%+ | Required (6.3.2) |
 | Artifact signing or attestation | $signing_percentage% | 50%+ | N/A | 95%+ | Recommended | Recommended |
 
@@ -1429,8 +1623,19 @@ $(read_summary '.score.points_earned')/100, giving a risk score of $risk_score.
 | Dependency monitoring | $(read_summary '.score.breakdown.dependency_monitoring') | 5 |
 | Remediation timeliness | $(read_summary '.score.breakdown.remediation_timeliness') | 10 |
 | Code ownership | $(read_summary '.score.breakdown.ownership') | 5 |
-| Action pinning | $(read_summary '.score.breakdown.action_pinning') | 5 |
+| Workflow hardening (pinning, token scope) | $(read_summary '.score.breakdown.workflow_hardening') | 5 |
 | SBOM and provenance | $(read_summary '.score.breakdown.provenance') | 5 |
+
+### Organization access surface
+
+| | |
+|---|---|
+| Members | $org_members |
+| Owners | $org_owners |
+| Security managers | $security_managers_count |
+| Default repository permission | $(read_summary '.organization_controls.default_repository_permission') |
+| Installed GitHub Apps | $(read_summary '.organization_controls.github_apps.total') ($apps_with_write with write access, $(read_summary '.organization_controls.github_apps.all_repositories') scoped to all repositories) |
+| Organization webhooks | $(read_summary '.organization_controls.webhooks.total') ($webhooks_without_secret without a secret, $webhooks_insecure_ssl with SSL verification disabled) |
 
 ### Detailed Framework Assessments
 
@@ -1482,6 +1687,9 @@ generate_fedramp_nist_report() {
 | Secret scanning push protection | $push_protection_percentage% |
 | CODEOWNERS present | $codeowners_percentage% |
 | Actions pinned to a commit SHA | $pinning_percentage% |
+| Read-only default workflow token | $read_only_token_percentage% |
+| Workflows with explicit permissions | $workflow_permissions_percentage% |
+| Third-party Action policy restricted | $restricted_actions_percentage% |
 | SBOM generation | $sbom_percentage% |
 | Artifact signing | $signing_percentage% |
 | Build provenance attestation | $attestation_percentage% |
@@ -1539,8 +1747,8 @@ generate_fedramp_nist_report() {
 |---------|-------------|--------|-----------|
 | CM-2 | Baseline Configuration | $(status_for "$protected_percentage" 80) | Protected branches: $protected_percentage% |
 | CM-3 | Configuration Change Control | $(status_for "$rulesets_percentage" 50) | Repository rulesets: $rulesets_percentage% |
-| CM-5 | Access Restrictions for Change | $(status_for "$review_percentage" 80) | Review enforcement: $review_percentage% |
-| CM-7 | Least Functionality | $(status_for "$pinning_percentage" 80) | Actions pinned to a commit SHA: $pinning_percentage% |
+| CM-5 | Access Restrictions for Change | $(status_for "$review_percentage" 80) | Review enforcement: $review_percentage%, Actions can approve PRs in $actions_can_approve_prs repositories |
+| CM-7 | Least Functionality | $(status_for "$read_only_token_percentage" 100) | Read-only default workflow token: $read_only_token_percentage%, explicit workflow permissions: $workflow_permissions_percentage% |
 
 ### NIST SP 800-161 Rev 1 Update 1 Supply Chain Controls
 
@@ -1549,7 +1757,8 @@ generate_fedramp_nist_report() {
 |---------|-------------|--------|-----------|
 | SR-3 | Supply Chain Controls and Processes | $(status_for "$protected_percentage" 80) | Development controls enforced: $protected_percentage% |
 | SR-4 | Provenance | $(status_for "$sbom_percentage" 50) | SBOM generation: $sbom_percentage%, attestation: $attestation_percentage% |
-| SR-5 | Acquisition Strategies, Tools, and Methods | $(status_for "$pinning_percentage" 80) | Actions pinned to a commit SHA: $pinning_percentage% |
+| SR-5 | Acquisition Strategies, Tools, and Methods | $(status_for "$pinning_percentage" 80) | Actions pinned to a commit SHA: $pinning_percentage%, third-party Action policy restricted: $restricted_actions_percentage% |
+| SR-6 | Supplier Assessments and Reviews | $(status_for "$restricted_actions_percentage" 100) | $apps_with_write installed Apps with write access |
 | SR-10 | Inspection of Systems or Components | $(status_for "$ghas_percentage" 80) | Automated scanning coverage: $ghas_percentage% |
 | SR-11 | Component Authenticity | $(status_for "$signing_percentage" 50) | Artifact signing: $signing_percentage% |
 

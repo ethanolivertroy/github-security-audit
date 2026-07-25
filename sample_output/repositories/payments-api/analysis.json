@@ -27,10 +27,24 @@
   },
   "protected": true,
   "security_analysis": {
+    "available": true,
     "advanced_security": "enabled",
     "secret_scanning": "enabled",
     "secret_scanning_push_protection": "enabled",
     "dependabot_security_updates": "enabled"
+  },
+  "actions": {
+    "available": true,
+    "enabled": true,
+    "allowed_actions": "selected",
+    "default_workflow_permissions": "read",
+    "can_approve_pull_request_reviews": null
+  },
+  "push_protection_bypasses": {
+    "available": false,
+    "total": 0,
+    "approved": 0,
+    "pending": 0
   },
   "dependabot_alerts_enabled": true,
   "codeowners": true,

@@ -47,11 +47,29 @@ case "$query" in
     ;;
 esac
 
+# Query parameters that change *which* resources are returned, as opposed to
+# how they are paged, select a distinct fixture: members?role=admin is served
+# from "members@role=admin.json".
+selector=""
+for param in ${query//&/ }; do
+  case "$param" in
+    per_page=*|page=*) ;;
+    *) selector="${selector:+$selector+}$param" ;;
+  esac
+done
+
 status=200
-fixture="$MOCK_API_DIR/$path.json"
-if [ ! -f "$fixture" ]; then
-  fixture="$MOCK_API_DIR/$path"
-fi
+fixture=""
+for candidate in \
+  "${selector:+$MOCK_API_DIR/$path@$selector.json}" \
+  "$MOCK_API_DIR/$path.json" \
+  "$MOCK_API_DIR/$path"; do
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    fixture="$candidate"
+    break
+  fi
+done
+[ -n "$fixture" ] || fixture="$MOCK_API_DIR/$path.json"
 
 # Fixture directories may carry a status override, e.g. a 403 for endpoints the
 # token is not allowed to read.

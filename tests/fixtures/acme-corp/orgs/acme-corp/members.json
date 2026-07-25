@@ -1,4 +1,6 @@
 [
   { "login": "alice", "id": 1 },
-  { "login": "bob", "id": 2 }
+  { "login": "bob", "id": 2 },
+  { "login": "carol", "id": 3 },
+  { "login": "dave", "id": 4 }
 ]

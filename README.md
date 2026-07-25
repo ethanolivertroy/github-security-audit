@@ -10,7 +10,9 @@ Point it at an organization. It pulls org- and repo-level security settings thro
 
 **Organization**
 - Mandatory 2FA, security managers actually assigned, audit log access
-- Default security settings for new repositories, org webhooks, installed GitHub Apps
+- Owner count, base repository permission, default security settings for new repositories
+- Webhooks with no secret configured or SSL verification disabled
+- Installed GitHub Apps, how many hold write access, and how many are scoped to every repository
 - Org-level security policy presence
 
 **Repositories**
@@ -18,9 +20,14 @@ Point it at an organization. It pulls org- and repo-level security settings thro
 - Dependabot, code scanning, secret scanning and push protection enablement
 - CODEOWNERS and per-repository security policies
 
+**CI/CD**
+- Whether the default `GITHUB_TOKEN` is read-only, and whether Actions can approve pull requests
+- Whether the repository allows any third-party Action or restricts them to a list
+- Explicit `permissions:` blocks in workflows
+- Approved secret scanning push protection bypasses
+
 **Supply chain**
 - Actions pinned to a full commit SHA, parsed out of the workflow files themselves
-- Explicit `permissions:` blocks in workflows
 - SBOM, signing, and provenance steps in workflow bodies, plus `.sig` and SBOM attachments on the latest release
 
 **Findings**
@@ -30,6 +37,7 @@ Point it at an organization. It pulls org- and repo-level security settings thro
 **Reports**
 - One framework or all at once
 - Risk score from 0-100 (lower is better) with a published per-control breakdown, plus a High / Medium / Low compliance level
+- A framework-independent section for configuration that defeats another control, such as Actions being able to approve the reviews they were meant to be gated by
 - Control mappings and prioritized remediation
 - `summary.json` for dashboards and `evidence_manifest.txt` for chain of custody
 
@@ -37,10 +45,14 @@ Supported frameworks: FedRAMP, NIST SP 800-53, NIST SP 800-161, SOC 2 Type II, H
 
 ### What it does not do
 
-A control the token cannot see is reported as `?`, not as a pass or a failure.
-Common causes: the organization audit log needs GitHub Enterprise Cloud, and
-alert endpoints need `security_events` plus the feature switched on. The report
-says so at the top rather than quietly scoring you.
+A control the token cannot see is reported as `?`, not as a pass or a failure,
+and `summary.json` carries a `not_assessed` block with the counts. Common
+causes: the organization audit log needs GitHub Enterprise Cloud; alert
+endpoints need `security_events` plus the feature switched on; and GitHub
+returns a repository's `security_and_analysis` block only to callers with admin
+permission on that repository, so a non-admin token would otherwise read as 0%
+scanning coverage everywhere. The report says so at the top rather than quietly
+scoring you.
 
 Archived and empty repositories are excluded from coverage percentages, because
 neither can carry branch protection and counting them produces a gap you cannot
@@ -177,7 +189,7 @@ every report prints the breakdown so you can argue with the weighting:
 | Remediation timeliness (nothing past due) | 10 |
 | Dependency monitoring | 5 |
 | Code ownership | 5 |
-| Actions pinned to a commit SHA | 5 |
+| Workflow hardening (3 for SHA pinning, 2 for a read-only default token) | 5 |
 | SBOM and provenance | 5 |
 
 0-20 is High, 21-50 Medium, above 50 Low. The number is a prioritisation aid,

@@ -1,0 +1,5 @@
+{
+  "login": "limited-org",
+  "two_factor_requirement_enabled": true,
+  "default_repository_permission": "read"
+}

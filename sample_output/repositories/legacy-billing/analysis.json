@@ -16,10 +16,24 @@
   },
   "protected": false,
   "security_analysis": {
+    "available": true,
     "advanced_security": "disabled",
     "secret_scanning": "disabled",
     "secret_scanning_push_protection": "disabled",
     "dependabot_security_updates": "disabled"
+  },
+  "actions": {
+    "available": true,
+    "enabled": true,
+    "allowed_actions": "all",
+    "default_workflow_permissions": "write",
+    "can_approve_pull_request_reviews": true
+  },
+  "push_protection_bypasses": {
+    "available": false,
+    "total": 0,
+    "approved": 0,
+    "pending": 0
   },
   "dependabot_alerts_enabled": false,
   "codeowners": false,

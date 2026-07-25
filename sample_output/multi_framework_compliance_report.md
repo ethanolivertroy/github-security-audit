@@ -9,7 +9,7 @@
 | Organization | acme-corp |
 | Repositories discovered | 5 |
 | Repositories scored | 3 (archived: 1, excluded unless `INCLUDE_ARCHIVED=true`) |
-| Risk score | **47/100** (lower is better) |
+| Risk score | **48/100** (lower is better) |
 | Compliance level | **Medium** |
 
 ### Scope and evidence quality
@@ -21,6 +21,16 @@
   vulnerability posture as unknown, not clean.
 - **The organization audit log was not readable.** It requires GitHub Enterprise Cloud plus
   an owner-scoped token, so audit trail controls below are reported as not assessed.
+
+### Configuration that undermines another control
+
+- **Repositories where GitHub Actions can approve pull requests: 1.** A workflow can satisfy the review it was supposed to be checked by, which voids separation of duties (AC-5, PCI 6.5.1).
+- **The default `GITHUB_TOKEN` has write access in 34% of repositories.** Every third-party action in those workflows inherits commit rights (CM-7, SR-5).
+- **Any third-party Action may run in 34% of repositories.** There is no supplier gate on code executing in your CI (SR-5, SR-6).
+- **Approved push protection bypasses: 1.** A secret reached the repository despite push protection being enabled. Treat those secrets as exposed and rotate them.
+- **Organization webhooks with no secret configured: 1.** Their receivers cannot authenticate payloads as coming from GitHub (SC-8, AU-9).
+- **Organization webhooks with SSL verification disabled: 1.** Payloads are deliverable to an interceptor (SC-8).
+- **Installed GitHub Apps with write access: 2.** Each is a supplier holding commit rights and needs a documented assessment (SR-6, AC-6).
 
 ### Framework Readiness Summary
 
@@ -47,6 +57,9 @@ input to an assessment, never a substitute for one.
 | Open findings past due | 2 | 0 | 0 | 0 | 0 | 0 |
 | Audit log accessible | false | Required | Required | Required | Required | Required |
 | Actions pinned to a commit SHA | 66% | 80%+ | Recommended | Recommended | 80%+ | Recommended |
+| Read-only default workflow token | 66% | 100% | Recommended | Recommended | 100% | 100% |
+| Workflows with explicit permissions | 50% | 80%+ | Recommended | Recommended | 80%+ | Recommended |
+| Third-party Action policy restricted | 66% | Required | Recommended | Recommended | Required | Required |
 | SBOM generation | 33% | 50%+ | N/A | N/A | 60%+ | Required (6.3.2) |
 | Artifact signing or attestation | 33% | 50%+ | N/A | 95%+ | Recommended | Recommended |
 
@@ -72,7 +85,7 @@ Remediation windows used: critical 15 days, high 30, medium 90, low 180.
 ### Score breakdown
 
 Every point below is attributable to a measured control. Total earned:
-53/100, giving a risk score of 47.
+52/100, giving a risk score of 48.
 
 | Control | Points earned | Maximum |
 |---------|---------------|---------|
@@ -84,8 +97,19 @@ Every point below is attributable to a measured control. Total earned:
 | Dependency monitoring | 3 | 5 |
 | Remediation timeliness | 5 | 10 |
 | Code ownership | 3 | 5 |
-| Action pinning | 3 | 5 |
+| Workflow hardening (pinning, token scope) | 2 | 5 |
 | SBOM and provenance | 1 | 5 |
+
+### Organization access surface
+
+| | |
+|---|---|
+| Members | 4 |
+| Owners | 2 |
+| Security managers | 1 |
+| Default repository permission | read |
+| Installed GitHub Apps | 3 (2 with write access, 2 scoped to all repositories) |
+| Organization webhooks | 2 (1 without a secret, 1 with SSL verification disabled) |
 
 ### Detailed Framework Assessments
 
